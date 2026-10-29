@@ -6,18 +6,21 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
-from datetime import date
+from datetime import date, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from servidor import Caja, crear_manejador
+from servidor import Caja, Cierres, crear_manejador
 
 
-class PruebasCaja(unittest.TestCase):
+class ServidorDePrueba(unittest.TestCase):
+    """Base sin pruebas propias: levanta el servidor con archivos temporales y ofrece pedir()."""
+
     def setUp(self):
         self.carpeta = tempfile.TemporaryDirectory()
         caja = Caja(Path(self.carpeta.name) / "movimientos.json")
-        self.servidor = ThreadingHTTPServer(("127.0.0.1", 0), crear_manejador(caja))
+        cierres = Cierres(Path(self.carpeta.name) / "cierres.json")
+        self.servidor = ThreadingHTTPServer(("127.0.0.1", 0), crear_manejador(caja, cierres))
         self.base = f"http://127.0.0.1:{self.servidor.server_address[1]}"
         threading.Thread(target=self.servidor.serve_forever, daemon=True).start()
 
@@ -43,6 +46,8 @@ class PruebasCaja(unittest.TestCase):
                       "medio": "yape", "fecha": "2026-10-05", **cambios}
         return self.pedir("POST", "/movimientos", movimiento)
 
+
+class PruebasCaja(ServidorDePrueba):
     def test_pagina_web(self):
         with urllib.request.urlopen(self.base + "/") as respuesta:
             self.assertEqual(respuesta.status, 200)
@@ -180,6 +185,130 @@ class PruebasCaja(unittest.TestCase):
         self.assertEqual(self.pedir("GET", "/movimientos?mes=2026-10")[1], [])
         self.assertEqual(self.pedir("DELETE", "/movimientos/1")[0], 404)
         self.assertEqual(self.pedir("DELETE", "/movimientos/abc")[0], 404)
+
+
+class PruebasCierre(ServidorDePrueba):
+    def preparar_dia(self):
+        """El 2026-10-05: efectivo +80 −35.50 (esperado 44.50) y Yape +150. Otro día no cuenta."""
+        self.registrar()  # ingreso 150 por Yape
+        self.registrar(monto=80, categoria="certificado", medio="efectivo")
+        self.registrar(tipo="gasto", monto="35.50", categoria="insumos", medio="efectivo")
+        self.registrar(monto=999, medio="efectivo", fecha="2026-10-06")
+
+    def cerrar(self, **cambios):
+        return self.pedir("POST", "/cierres", {"fecha": "2026-10-05", "efectivo_contado": 40,
+                                                "yape_app": 150, **cambios})
+
+    def test_vista_previa_del_dia_abierto(self):
+        self.preparar_dia()
+        self.assertEqual(self.pedir("GET", "/cierre?fecha=2026-10-05"), (200, {
+            "fecha": "2026-10-05",
+            "cerrado": False,
+            "efectivo": {"ingresos": 80.0, "gastos": 35.5, "esperado": 44.5},
+            "yape": {"ingresos": 150.0},
+        }))
+
+    def test_vista_previa_sin_fecha_es_hoy(self):
+        cierre = self.pedir("GET", "/cierre")[1]
+        self.assertEqual((cierre["fecha"], cierre["cerrado"]), (date.today().isoformat(), False))
+
+    def test_cerrar_con_faltante(self):
+        self.preparar_dia()
+        estado, cierre = self.cerrar(nota="  Di mal un vuelto  ")
+        self.assertEqual(estado, 201)
+        cerrado_en = cierre.pop("cerrado_en")
+        self.assertRegex(cerrado_en, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+        self.assertEqual(cierre, {
+            "fecha": "2026-10-05",
+            "cerrado": True,
+            "efectivo": {"ingresos": 80.0, "gastos": 35.5, "esperado": 44.5, "contado": 40.0, "diferencia": -4.5},
+            "yape": {"ingresos": 150.0, "app": 150.0, "diferencia": 0.0},
+            "nota": "Di mal un vuelto",
+        })
+        self.assertEqual(self.pedir("GET", "/cierre?fecha=2026-10-05")[1], {**cierre, "cerrado_en": cerrado_en})
+
+    def test_cerrar_con_sobrante_y_yape_sin_anotar(self):
+        self.preparar_dia()
+        cierre = self.cerrar(efectivo_contado="50.00", yape_app=170)[1]
+        self.assertEqual(cierre["efectivo"]["diferencia"], 5.5)
+        self.assertEqual(cierre["yape"]["diferencia"], 20.0)  # la app recibió 20 que no se registraron
+
+    def test_cerrar_cuadra_con_decimales_exactos(self):
+        self.registrar(monto=0.1, medio="efectivo")
+        self.registrar(monto=0.2, medio="efectivo")
+        cierre = self.cerrar(efectivo_contado=0.3, yape_app=0)[1]
+        self.assertEqual(cierre["efectivo"]["esperado"], 0.3)
+        self.assertEqual(cierre["efectivo"]["diferencia"], 0.0)
+
+    def test_cerrar_dia_sin_movimientos(self):
+        estado, cierre = self.cerrar(efectivo_contado=0, yape_app=0)
+        self.assertEqual(estado, 201)
+        self.assertEqual(cierre["efectivo"]["diferencia"], 0.0)
+
+    def test_cerrar_dos_veces_da_409(self):
+        self.cerrar()
+        estado, cuerpo = self.cerrar(efectivo_contado=44.5)
+        self.assertEqual(estado, 409)
+        self.assertIn("ya está cerrado", cuerpo["error"])
+        self.assertEqual(self.pedir("GET", "/cierre?fecha=2026-10-05")[1]["efectivo"]["contado"], 40.0)
+
+    def test_cerrar_con_datos_invalidos_falla(self):
+        manana = (date.today() + timedelta(days=1)).isoformat()
+        invalidos = [
+            {"fecha": manana},
+            {"fecha": "2026-02-30"},
+            {"efectivo_contado": -1},
+            {"efectivo_contado": None},
+            {"yape_app": "mucho"},
+            {"yape_app": 1.234},
+        ]
+        for cambios in invalidos:
+            with self.subTest(cambios):
+                estado, cuerpo = self.cerrar(**cambios)
+                self.assertEqual(estado, 400)
+                self.assertIn("error", cuerpo)
+        self.assertEqual(self.pedir("GET", "/cierres?mes=todos")[1], [])
+
+    def test_reabrir(self):
+        self.cerrar()
+        self.assertEqual(self.pedir("DELETE", "/cierres/2026-10-05"), (204, None))
+        self.assertFalse(self.pedir("GET", "/cierre?fecha=2026-10-05")[1]["cerrado"])
+        self.assertEqual(self.pedir("DELETE", "/cierres/2026-10-05")[0], 404)
+        self.assertEqual(self.cerrar()[0], 201)  # se puede volver a cerrar
+
+    def test_listar_cierres_por_mes(self):
+        self.cerrar(fecha="2026-10-20")
+        self.cerrar(fecha="2026-10-05")
+        self.cerrar(fecha="2026-09-30")
+        self.assertEqual([c["fecha"] for c in self.pedir("GET", "/cierres?mes=2026-10")[1]],
+                         ["2026-10-05", "2026-10-20"])
+        self.assertEqual(len(self.pedir("GET", "/cierres?mes=todos")[1]), 3)
+        self.assertEqual(self.pedir("GET", "/cierres?mes=octubre")[0], 400)
+
+    def test_dia_cerrado_bloquea_los_movimientos(self):
+        self.preparar_dia()
+        self.cerrar()
+        intentos = [
+            ("POST", "/movimientos", {"tipo": "ingreso", "monto": 10, "categoria": "consulta",
+                                      "medio": "yape", "fecha": "2026-10-05"}),
+            ("PATCH", "/movimientos/1", {"monto": 10}),           # editar un movimiento del día cerrado
+            ("PATCH", "/movimientos/4", {"fecha": "2026-10-05"}),  # mover otro hacia el día cerrado
+            ("DELETE", "/movimientos/1", None),
+        ]
+        for metodo, ruta, cuerpo in intentos:
+            with self.subTest(metodo=metodo, ruta=ruta, cuerpo=cuerpo):
+                estado, respuesta = self.pedir(metodo, ruta, cuerpo)
+                self.assertEqual(estado, 409)
+                self.assertEqual(respuesta["error"], "El día 2026-10-05 está cerrado. Reábrelo para hacer cambios.")
+        self.assertEqual(len(self.pedir("GET", "/movimientos?mes=2026-10")[1]), 4)
+        self.assertEqual(self.pedir("PATCH", "/movimientos/4", {"monto": 1})[0], 200)  # otro día: sin bloqueo
+
+    def test_reabrir_desbloquea(self):
+        self.preparar_dia()
+        self.cerrar()
+        self.pedir("DELETE", "/cierres/2026-10-05")
+        self.assertEqual(self.pedir("PATCH", "/movimientos/1", {"monto": 10})[0], 200)
+        self.assertEqual(self.pedir("DELETE", "/movimientos/1")[0], 204)
 
 
 if __name__ == "__main__":

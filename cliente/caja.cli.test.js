@@ -19,6 +19,7 @@ before(async () => {
 
 beforeEach(() => {
   writeFileSync(servidor.archivoCaja, "[]"); // cada prueba empieza con la caja vacía
+  writeFileSync(servidor.archivoCierres, "[]"); // y sin días cerrados
 });
 
 after(() => {
@@ -88,17 +89,81 @@ test("eliminar quita el movimiento", async () => {
   assert.equal((await cli("listar", "2026-10")).salida, "No hay movimientos en 2026-10.");
 });
 
-test("respaldar guarda todos los movimientos, de cualquier mes", async () => {
+test("respaldar guarda todos los movimientos y los cierres, de cualquier mes", async () => {
   await cli("registrar", "ingreso", "150", "consulta", "yape", "--fecha", "2026-10-05");
   await cli("registrar", "gasto", "20", "servicios", "efectivo", "--fecha", "2026-09-30");
+  await cli("cerrar", "0", "150", "--fecha", "2026-10-05");
   const destino = join(servidor.carpeta, "respaldos-caja");
   const { codigo, salida } = await cli("respaldar", destino);
   assert.equal(codigo, 0);
-  assert.match(salida, /^Copia de seguridad guardada \(2 movimientos\): .*caja-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.json$/);
-  const archivos = readdirSync(destino);
-  assert.equal(archivos.length, 1);
-  const copia = JSON.parse(readFileSync(join(destino, archivos[0]), "utf-8"));
-  assert.deepEqual(copia.map((m) => m.fecha), ["2026-09-30", "2026-10-05"]);
+  const [lineaCaja, lineaCierres] = salida.split("\n");
+  assert.match(lineaCaja, /^Copia de seguridad guardada \(2 movimientos\): .*caja-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.json$/);
+  assert.match(lineaCierres, /^Copia de seguridad guardada \(1 cierre\): .*cierres-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.json$/);
+  const archivos = readdirSync(destino).sort();
+  assert.equal(archivos.length, 2);
+  const leer = (nombre) => JSON.parse(readFileSync(join(destino, nombre), "utf-8"));
+  assert.deepEqual(leer(archivos[0]).map((m) => m.fecha), ["2026-09-30", "2026-10-05"]); // caja-...
+  assert.deepEqual(leer(archivos[1]).map((c) => c.fecha), ["2026-10-05"]); // cierres-...
+});
+
+// El 2026-10-05: efectivo +80 −35.50 (esperado S/ 44.50) y Yape +150.
+async function prepararDia() {
+  await cli("registrar", "ingreso", "150", "consulta", "yape", "--fecha", "2026-10-05");
+  await cli("registrar", "ingreso", "80", "certificado", "efectivo", "--fecha", "2026-10-05");
+  await cli("registrar", "gasto", "35.50", "insumos", "efectivo", "--fecha", "2026-10-05");
+}
+
+test("cierre muestra lo que debería haber en un día abierto", async () => {
+  await prepararDia();
+  assert.equal((await cli("cierre", "2026-10-05")).salida, [
+    "Cierre del 2026-10-05: abierto",
+    "  Efectivo: ingresos S/ 80.00 · gastos S/ 35.50 · esperado S/ 44.50",
+    "  Yape: ingresos S/ 150.00",
+    "Para cerrarlo: node caja.js cerrar <efectivo_contado> <yape_segun_app> --fecha 2026-10-05",
+  ].join("\n"));
+  assert.match((await cli("cierre")).salida, /^Cierre del \d{4}-\d{2}-\d{2}: abierto/); // sin fecha = hoy
+});
+
+test("cerrar guarda las diferencias y la nota", async () => {
+  await prepararDia();
+  const { codigo, salida } = await cli("cerrar", "40", "170", "Di", "mal", "un", "vuelto", "--fecha", "2026-10-05");
+  assert.equal(codigo, 0);
+  const lineas = salida.split("\n");
+  assert.match(lineas[0], /^Cierre del 2026-10-05: cerrado el \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  assert.deepEqual(lineas.slice(1), [
+    "  Efectivo: esperado S/ 44.50 · contado S/ 40.00 → faltan S/ 4.50",
+    "  Yape: registrado S/ 150.00 · app S/ 170.00 → en la app hay S/ 20.00 sin registrar",
+    "  Nota: Di mal un vuelto",
+  ]);
+  assert.equal((await cli("cierre", "2026-10-05")).salida, salida);
+});
+
+test("un día cerrado no admite cambios hasta reabrirlo", async () => {
+  await prepararDia();
+  await cli("cerrar", "44.50", "150", "--fecha", "2026-10-05");
+  const bloqueado = "Error: El día 2026-10-05 está cerrado. Reábrelo para hacer cambios.";
+  assert.equal((await cli("registrar", "ingreso", "10", "otro", "yape", "--fecha", "2026-10-05")).error, bloqueado);
+  assert.equal((await cli("editar", "1", "monto=10")).error, bloqueado);
+  assert.equal((await cli("eliminar", "1")).error, bloqueado);
+  assert.equal((await cli("cerrar", "0", "0", "--fecha", "2026-10-05")).error,
+    "Error: El día 2026-10-05 ya está cerrado. Reábrelo para cerrarlo de nuevo.");
+
+  assert.equal((await cli("reabrir", "2026-10-05")).salida,
+    "Reabierto el día 2026-10-05: ya puedes corregir sus movimientos y volver a cerrarlo.");
+  assert.equal((await cli("editar", "1", "monto=10")).codigo, 0);
+  assert.equal((await cli("reabrir", "2026-10-05")).error, "Error: El día 2026-10-05 no está cerrado");
+  assert.equal((await cli("reabrir")).error, "Error: Indica el día a reabrir, por ejemplo: reabrir 2026-10-29");
+});
+
+test("cierres lista el historial del mes", async () => {
+  await prepararDia();
+  await cli("cerrar", "44.50", "150", "--fecha", "2026-10-05");
+  await cli("cerrar", "10", "0", "--fecha", "2026-10-02");
+  assert.equal((await cli("cierres", "2026-10")).salida, [
+    "2026-10-02  efectivo: sobran S/ 10.00 · yape: cuadra",
+    "2026-10-05  efectivo: cuadra · yape: cuadra",
+  ].join("\n"));
+  assert.equal((await cli("cierres", "2026-09")).salida, "No hay cierres en 2026-09.");
 });
 
 test("los errores del servidor se muestran y salen con código 1", async () => {

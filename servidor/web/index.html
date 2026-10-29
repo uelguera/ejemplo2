@@ -7,15 +7,16 @@
   <style>
     :root {
       --fondo: #f5f6f8; --tarjeta: #ffffff; --texto: #1d2330; --suave: #6b7280;
-      --borde: #e2e5ea; --acento: #2563eb; --peligro: #dc2626; --exito: #15803d;
+      --borde: #e2e5ea; --acento: #2563eb; --peligro: #dc2626; --exito: #15803d; --aviso: #b45309;
     }
     @media (prefers-color-scheme: dark) {
       :root {
         --fondo: #111418; --tarjeta: #1a1f26; --texto: #e7eaee; --suave: #9aa3af;
-        --borde: #2b323c; --acento: #60a5fa; --peligro: #f87171; --exito: #4ade80;
+        --borde: #2b323c; --acento: #60a5fa; --peligro: #f87171; --exito: #4ade80; --aviso: #fbbf24;
       }
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; } /* si no, "form { display: grid }" le gana al atributo hidden */
     body { margin: 0; font: 16px/1.4 system-ui, sans-serif; background: var(--fondo); color: var(--texto); }
     main { max-width: 640px; margin: 40px auto; padding: 0 16px; }
     .cabecera { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
@@ -42,7 +43,17 @@
     .botones { display: flex; gap: 8px; }
     .botones .principal { flex: 1; }
     li.editando { outline: 2px solid var(--acento); outline-offset: -2px; border-radius: 10px; }
-    #error { color: var(--peligro); min-height: 1.4em; margin: 8px 0 0; }
+    .error { color: var(--peligro); min-height: 1.4em; margin: 8px 0 0; }
+    h2 { font-size: 1.2rem; margin: 28px 0 12px; }
+    .cierre { background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 10px; padding: 12px; }
+    .cierre dl { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; margin: 0 0 12px; }
+    .cierre dt { color: var(--suave); }
+    .cierre dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .cierre dd.resultado { font-weight: 600; }
+    .cuadra { color: var(--exito); }
+    .falta { color: var(--peligro); }
+    .descuadre { color: var(--aviso); }
+    .candado { color: var(--suave); font-size: .85rem; white-space: nowrap; }
     ul { list-style: none; margin: 0; padding: 0; background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 10px; }
     li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--borde); }
     li:first-child { border-top: 0; }
@@ -91,9 +102,23 @@
         <button id="cancelar" type="button" hidden>Cancelar</button>
       </div>
     </form>
-    <p id="error" role="alert"></p>
+    <p id="error" class="error" role="alert"></p>
 
     <ul id="lista"></ul>
+
+    <h2>Cierre del día</h2>
+    <label class="mes">Día <input id="dia" type="date" required></label>
+    <div class="cierre">
+      <dl id="cierre-datos"></dl>
+      <form id="form-cierre" hidden>
+        <input id="contado" type="number" min="0" step="0.01" placeholder="Efectivo contado (S/)" aria-label="Efectivo contado en soles" required>
+        <input id="yape-app" type="number" min="0" step="0.01" placeholder="Recibido en Yape según la app (S/)" aria-label="Total recibido en Yape según la app, en soles" required>
+        <input id="nota" class="ancho" type="text" placeholder="Nota (opcional), p. ej. di mal un vuelto" aria-label="Nota">
+        <button class="principal ancho">Cerrar el día</button>
+      </form>
+      <button id="reabrir" type="button" hidden>Reabrir día para corregirlo</button>
+    </div>
+    <p id="error-cierre" class="error" role="alert"></p>
   </main>
 
   <script>
@@ -107,9 +132,11 @@
     const $ = (id) => document.getElementById(id);
     const lista = $("lista");
     const error = $("error");
+    const errorCierre = $("error-cierre");
     const hoy = () => new Date().toLocaleDateString("en-CA"); // AAAA-MM-DD en hora local
     const mayuscula = (texto) => texto.charAt(0).toUpperCase() + texto.slice(1);
     let editando = null; // id del movimiento cargado en el formulario, o null si se registra uno nuevo
+    let diasCerrados = new Set(); // fechas cerradas del mes mostrado: sus movimientos no se pueden tocar
 
     async function pedir(metodo, ruta, cuerpo) {
       let respuesta;
@@ -130,19 +157,22 @@
       return datos;
     }
 
-    // Ejecuta un cambio, muestra el error si lo hay y siempre vuelve a pintar el mes.
-    async function accion(cambio) {
-      error.textContent = "";
-      try { await cambio(); } catch (e) { error.textContent = e.message; }
-      try { await cargar(); } catch (e) { error.textContent = e.message; }
+    // Ejecuta un cambio, muestra el error (en el párrafo indicado) si lo hay y siempre vuelve a pintar todo.
+    async function accion(cambio, destino = error) {
+      error.textContent = errorCierre.textContent = "";
+      try { await cambio(); } catch (e) { destino.textContent = e.message; }
+      try { await cargar(); } catch (e) { destino.textContent = e.message; }
     }
 
     async function cargar() {
       const mes = $("mes").value;
-      const [movimientos, resumen] = await Promise.all([
+      const [movimientos, resumen, cierres] = await Promise.all([
         pedir("GET", `/movimientos?mes=${mes}`),
         pedir("GET", `/resumen?mes=${mes}`),
+        pedir("GET", `/cierres?mes=${mes}`),
+        cargarCierre(),
       ]);
+      diasCerrados = new Set(cierres.map((c) => c.fecha));
       $("ingresos").textContent = soles.format(resumen.ingresos);
       $("gastos").textContent = soles.format(resumen.gastos);
       $("saldo").textContent = soles.format(resumen.saldo);
@@ -181,6 +211,14 @@
       const monto = document.createElement("span");
       monto.className = `monto ${m.tipo}`;
       monto.textContent = `${m.tipo === "gasto" ? "−" : "+"} ${soles.format(m.monto)}`;
+
+      if (diasCerrados.has(m.fecha)) {
+        const candado = document.createElement("span");
+        candado.className = "candado";
+        candado.textContent = "🔒 Día cerrado";
+        fila.append(fecha, detalle, monto, candado);
+        return fila;
+      }
 
       const borrar = document.createElement("button");
       borrar.type = "button";
@@ -234,6 +272,78 @@
       for (const fila of lista.children) fila.classList.remove("editando");
     }
 
+    // Diferencia = lo contado (o lo que dice la app) − lo registrado. Mismo texto que el CLI.
+    function describirDiferencia(diferencia, medio) {
+      if (diferencia === 0) return { texto: "Cuadra", clase: "cuadra" };
+      const monto = soles.format(Math.abs(diferencia));
+      if (medio === "yape") {
+        return diferencia > 0
+          ? { texto: `En la app hay ${monto} sin registrar`, clase: "descuadre" }
+          : { texto: `${monto} registrados que no están en la app`, clase: "descuadre" };
+      }
+      return diferencia > 0
+        ? { texto: `Sobran ${monto}`, clase: "descuadre" }
+        : { texto: `Faltan ${monto}`, clase: "falta" };
+    }
+
+    // Pinta pares "nombre: valor" en la lista de datos del cierre. valor puede ser texto o {texto, clase}.
+    function mostrarDatosCierre(pares) {
+      const elementos = pares.flatMap(([nombre, valor]) => {
+        const dt = document.createElement("dt");
+        dt.textContent = nombre;
+        const dd = document.createElement("dd");
+        if (typeof valor === "string") {
+          dd.textContent = valor;
+        } else {
+          dd.textContent = valor.texto;
+          dd.className = `resultado ${valor.clase}`;
+        }
+        return [dt, dd];
+      });
+      $("cierre-datos").replaceChildren(...elementos);
+    }
+
+    async function cargarCierre() {
+      const c = await pedir("GET", `/cierre?fecha=${$("dia").value}`);
+      $("form-cierre").hidden = c.cerrado;
+      $("reabrir").hidden = !c.cerrado;
+      if (!c.cerrado) {
+        mostrarDatosCierre([
+          ["Cobrado en efectivo", soles.format(c.efectivo.ingresos)],
+          ["Gastado en efectivo", `− ${soles.format(c.efectivo.gastos)}`],
+          ["Efectivo que debería haber", { texto: soles.format(c.efectivo.esperado), clase: "" }],
+          ["Recibido por Yape (registrado)", soles.format(c.yape.ingresos)],
+        ]);
+        return;
+      }
+      mostrarDatosCierre([
+        ["Efectivo esperado", soles.format(c.efectivo.esperado)],
+        ["Efectivo contado", soles.format(c.efectivo.contado)],
+        ["Efectivo", describirDiferencia(c.efectivo.diferencia, "efectivo")],
+        ["Yape registrado", soles.format(c.yape.ingresos)],
+        ["Yape según la app", soles.format(c.yape.app)],
+        ["Yape", describirDiferencia(c.yape.diferencia, "yape")],
+        ...(c.nota ? [["Nota", c.nota]] : []),
+        ["Cerrado el", c.cerrado_en.replace("T", " ").slice(0, 16)],
+      ]);
+    }
+
+    $("form-cierre").addEventListener("submit", (e) => {
+      e.preventDefault();
+      accion(async () => {
+        await pedir("POST", "/cierres", {
+          fecha: $("dia").value,
+          efectivo_contado: $("contado").value,
+          yape_app: $("yape-app").value,
+          nota: $("nota").value,
+        });
+        $("contado").value = $("yape-app").value = $("nota").value = "";
+      }, errorCierre);
+    });
+    $("reabrir").addEventListener("click", () =>
+      accion(() => pedir("DELETE", `/cierres/${$("dia").value}`), errorCierre));
+    $("dia").addEventListener("change", () => { if ($("dia").value) accion(() => {}, errorCierre); });
+
     $("tipo").addEventListener("change", llenarCategorias);
     $("mes").addEventListener("change", () => { if ($("mes").value) accion(() => {}); });
     $("cancelar").addEventListener("click", () => { terminarEdicion(); error.textContent = ""; });
@@ -260,6 +370,7 @@
 
     $("fecha").value = hoy();
     $("mes").value = hoy().slice(0, 7);
+    $("dia").value = $("dia").max = hoy(); // no se puede cerrar un día que aún no llega
     llenarCategorias();
     accion(() => {});
   </script>

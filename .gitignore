@@ -2,4 +2,5 @@ __pycache__/
 *.pyc
 node_modules/
 servidor/movimientos.json
+servidor/cierres.json
 respaldos/
