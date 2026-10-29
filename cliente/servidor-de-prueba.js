@@ -20,11 +20,12 @@ export function levantarServidor() {
   const archivoCaja = join(carpeta, "movimientos.json");
   const archivoCierres = join(carpeta, "cierres.json");
   const archivoGastosFijos = join(carpeta, "gastos_fijos.json");
+  const archivoProductos = join(carpeta, "productos.json");
   return new Promise((resolver, rechazar) => {
     const proceso = spawn(PYTHON, ["-u", RUTA_SERVIDOR], {
       env: {
-        ...process.env, CAJA_PUERTO: "0", CAJA_ARCHIVO: archivoCaja,
-        CIERRES_ARCHIVO: archivoCierres, GASTOS_FIJOS_ARCHIVO: archivoGastosFijos,
+        ...process.env, CAJA_PUERTO: "0", CAJA_ARCHIVO: archivoCaja, CIERRES_ARCHIVO: archivoCierres,
+        GASTOS_FIJOS_ARCHIVO: archivoGastosFijos, PRODUCTOS_ARCHIVO: archivoProductos,
       },
     });
     const detener = () => {
@@ -35,7 +36,9 @@ export function levantarServidor() {
     proceso.stdout.on("data", (trozo) => {
       salida += trozo;
       const encontrado = salida.match(/http:\/\/127\.0\.0\.1:\d+/);
-      if (encontrado) resolver({ url: encontrado[0], carpeta, archivoCaja, archivoCierres, archivoGastosFijos, detener });
+      if (encontrado) {
+        resolver({ url: encontrado[0], carpeta, archivoCaja, archivoCierres, archivoGastosFijos, archivoProductos, detener });
+      }
     });
     proceso.on("error", rechazar);
     proceso.on("exit", (codigo) => rechazar(new Error(`El servidor terminó (código ${codigo}): ${salida}`)));

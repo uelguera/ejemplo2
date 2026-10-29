@@ -1,51 +1,11 @@
-"""Pruebas del servidor: levantan la API en un puerto libre con un archivo temporal."""
+"""Pruebas del módulo Caja: movimientos, resumen, cierre de caja y gastos fijos."""
 
-import json
-import tempfile
-import threading
 import unittest
 import urllib.error
 import urllib.request
 from datetime import date, timedelta
-from http.server import ThreadingHTTPServer
-from pathlib import Path
 
-from servidor import Caja, Cierres, GastosFijos, crear_manejador
-
-
-class ServidorDePrueba(unittest.TestCase):
-    """Base sin pruebas propias: levanta el servidor con archivos temporales y ofrece pedir()."""
-
-    def setUp(self):
-        self.carpeta = tempfile.TemporaryDirectory()
-        caja = Caja(Path(self.carpeta.name) / "movimientos.json")
-        cierres = Cierres(Path(self.carpeta.name) / "cierres.json")
-        gastos_fijos = GastosFijos(Path(self.carpeta.name) / "gastos_fijos.json")
-        self.servidor = ThreadingHTTPServer(("127.0.0.1", 0), crear_manejador(caja, cierres, gastos_fijos))
-        self.base = f"http://127.0.0.1:{self.servidor.server_address[1]}"
-        threading.Thread(target=self.servidor.serve_forever, daemon=True).start()
-
-    def tearDown(self):
-        self.servidor.shutdown()
-        self.servidor.server_close()
-        self.carpeta.cleanup()
-
-    def pedir(self, metodo, ruta, cuerpo=None):
-        datos = json.dumps(cuerpo).encode() if cuerpo is not None else None
-        peticion = urllib.request.Request(self.base + ruta, data=datos, method=metodo)
-        peticion.add_header("Content-Type", "application/json")
-        try:
-            with urllib.request.urlopen(peticion) as r:
-                texto = r.read()
-                return r.status, json.loads(texto) if texto else None
-        except urllib.error.HTTPError as e:
-            with e:  # cierra la respuesta de error para evitar ResourceWarning
-                return e.code, json.loads(e.read())
-
-    def registrar(self, **cambios):
-        movimiento = {"tipo": "ingreso", "monto": 150, "categoria": "consulta",
-                      "medio": "yape", "fecha": "2026-10-05", **cambios}
-        return self.pedir("POST", "/movimientos", movimiento)
+from servidor_de_prueba import ServidorDePrueba
 
 
 class PruebasCaja(ServidorDePrueba):

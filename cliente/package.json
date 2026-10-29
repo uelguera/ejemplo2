@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Cliente de línea de comandos para la caja del consultorio",
+  "description": "Clientes de línea de comandos para la caja y los productos del consultorio",
   "scripts": {
     "caja": "node caja.js",
+    "productos": "node productos.js",
     "test": "node --test"
   }
 }

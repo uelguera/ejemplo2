@@ -29,28 +29,21 @@
 //   node caja.js respaldar          (copia en respaldos/ del proyecto)
 //   node caja.js respaldar E:\copias      (o en la carpeta indicada)
 //
-// Categorías de ingreso: consulta, procedimiento, certificado, otro
-// Categorías de gasto:   alquiler, insumos, servicios, sueldos, otro
+// Categorías de ingreso: consulta, procedimiento, certificado, venta, otro
+// Categorías de gasto:   alquiler, insumos, compras, servicios, sueldos, otro
 // Medios de pago:        efectivo, yape
 
-import { ejecutarComandos, guardarRespaldo, pedir } from "./api.js";
+import {
+  ejecutarComandos, formatearSoles, guardarRespaldo, leerCambios, mesActual, pedir, sacarOpcion,
+} from "./api.js";
 
-const SOLES = new Intl.NumberFormat("es-PE", { style: "currency", currency: "PEN" });
-
-// "S/ 1,234.50", con espacio normal (Intl usa uno de no separación que se ve raro al copiar).
-export function formatearSoles(monto) {
-  return SOLES.format(monto).replace(/\u00a0/g, " ");
-}
+// Se exportan también desde aquí porque las pruebas y otros módulos ya los importaban de caja.js.
+export { formatearSoles, leerCambios, mesActual, sacarOpcion };
 
 export function formatearMovimiento(m) {
   const signo = m.tipo === "gasto" ? "-" : "+";
   const detalle = [m.categoria, m.medio, m.descripcion].filter(Boolean).join(" · ");
   return `${m.id}. ${m.fecha}  ${signo} ${formatearSoles(m.monto)}  ${detalle}`;
-}
-
-// Mes actual en hora local, p. ej. 2026-10
-export function mesActual(fecha = new Date()) {
-  return `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, "0")}`;
 }
 
 export function formatearResumen(r) {
@@ -69,31 +62,6 @@ export function formatearResumen(r) {
     ...categorias("Ingresos por categoría:", r.por_categoria.ingresos),
     ...categorias("Gastos por categoría:", r.por_categoria.gastos),
   ].join("\n");
-}
-
-// ["monto=40", "descripcion=Guantes y gasas"] -> { monto: "40", descripcion: "Guantes y gasas" }
-// Qué campos existen lo valida el servidor.
-export function leerCambios(pares) {
-  if (!pares.length) throw new Error("Indica qué cambiar, por ejemplo: editar 3 monto=40 medio=yape");
-  const cambios = {};
-  for (const par of pares) {
-    const igual = par.indexOf("=");
-    if (igual < 1) throw new Error(`"${par}" no tiene la forma campo=valor (por ejemplo monto=40)`);
-    cambios[par.slice(0, igual)] = par.slice(igual + 1);
-  }
-  return cambios;
-}
-
-const EJEMPLOS_OPCIONES = { "--fecha": "AAAA-MM-DD", "--dia": "un número del 1 al 31", "--medio": "efectivo o yape" };
-
-// Saca "--opcion valor" de los argumentos (los modifica) y devuelve el valor, o undefined si no está.
-export function sacarOpcion(args, opcion) {
-  const posicion = args.indexOf(opcion);
-  if (posicion === -1) return undefined;
-  const valor = args[posicion + 1];
-  if (!valor) throw new Error(`Falta el valor después de ${opcion} (${EJEMPLOS_OPCIONES[opcion]})`);
-  args.splice(posicion, 2);
-  return valor;
 }
 
 // "1. Alquiler  S/ 1,200.00  alquiler · efectivo · vence el 5  → pendiente"
@@ -203,6 +171,7 @@ const comandos = {
       ["caja", "/movimientos?mes=todos", "movimiento", "movimientos"],
       ["cierres", "/cierres?mes=todos", "cierre", "cierres"],
       ["gastos-fijos", "/gastos-fijos?mes=todos", "gasto fijo", "gastos fijos"],
+      ["productos", "/productos", "producto", "productos"],
     ];
     for (const [prefijo, ruta, singular, plural] of archivos) {
       const datos = await pedir("GET", ruta);

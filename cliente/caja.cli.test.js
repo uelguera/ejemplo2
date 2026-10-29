@@ -21,6 +21,7 @@ beforeEach(() => {
   writeFileSync(servidor.archivoCaja, "[]"); // cada prueba empieza con la caja vacía
   writeFileSync(servidor.archivoCierres, "[]"); // y sin días cerrados
   writeFileSync(servidor.archivoGastosFijos, "[]"); // ni gastos fijos
+  writeFileSync(servidor.archivoProductos, "[]"); // ni productos
 });
 
 after(() => {
@@ -79,7 +80,7 @@ test("editar muestra los errores sin cambiar nada", async () => {
   assert.equal((await cli("editar", "1", "precio=40")).error,
     "Error: No se puede cambiar: precio. Campos válidos: tipo, monto, categoria, medio, fecha, descripcion");
   assert.equal((await cli("editar", "1", "tipo=gasto")).error,
-    "Error: La categoría de un gasto debe ser una de: alquiler, insumos, servicios, sueldos, otro");
+    "Error: La categoría de un gasto debe ser una de: alquiler, insumos, compras, servicios, sueldos, otro");
   assert.equal((await cli("editar", "99", "monto=1")).error, "Error: Movimiento no encontrado");
   assert.equal((await cli("listar", "2026-10")).salida, "1. 2026-10-05  + S/ 150.00  consulta · yape");
 });
@@ -90,25 +91,31 @@ test("eliminar quita el movimiento", async () => {
   assert.equal((await cli("listar", "2026-10")).salida, "No hay movimientos en 2026-10.");
 });
 
-test("respaldar guarda los movimientos, los cierres y los gastos fijos, de cualquier mes", async () => {
+test("respaldar guarda movimientos, cierres, gastos fijos y productos, de cualquier mes", async () => {
   await cli("registrar", "ingreso", "150", "consulta", "yape", "--fecha", "2026-10-05");
   await cli("registrar", "gasto", "20", "servicios", "efectivo", "--fecha", "2026-09-30");
   await cli("cerrar", "0", "150", "--fecha", "2026-10-05");
   await cli("fijos", "agregar", "Alquiler", "1200", "alquiler", "efectivo");
+  writeFileSync(servidor.archivoProductos, JSON.stringify([
+    { id: 1, nombre: "Gasas", costo: 1, venta: 2, stock: 5, stock_minimo: 0 },
+    { id: 2, nombre: "Alcohol", costo: 4, venta: 7, stock: 3, stock_minimo: 1 },
+  ]));
   const destino = join(servidor.carpeta, "respaldos-caja");
   const { codigo, salida } = await cli("respaldar", destino);
   assert.equal(codigo, 0);
-  const [lineaCaja, lineaCierres, lineaFijos] = salida.split("\n");
+  const [lineaCaja, lineaCierres, lineaFijos, lineaProductos] = salida.split("\n");
   const fechaHora = String.raw`\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.json$`;
   assert.match(lineaCaja, new RegExp(String.raw`^Copia de seguridad guardada \(2 movimientos\): .*caja-${fechaHora}`));
   assert.match(lineaCierres, new RegExp(String.raw`^Copia de seguridad guardada \(1 cierre\): .*cierres-${fechaHora}`));
   assert.match(lineaFijos, new RegExp(String.raw`^Copia de seguridad guardada \(1 gasto fijo\): .*gastos-fijos-${fechaHora}`));
+  assert.match(lineaProductos, new RegExp(String.raw`^Copia de seguridad guardada \(2 productos\): .*productos-${fechaHora}`));
   const archivos = readdirSync(destino).sort();
-  assert.equal(archivos.length, 3);
+  assert.equal(archivos.length, 4);
   const leer = (nombre) => JSON.parse(readFileSync(join(destino, nombre), "utf-8"));
   assert.deepEqual(leer(archivos[0]).map((m) => m.fecha), ["2026-09-30", "2026-10-05"]); // caja-...
   assert.deepEqual(leer(archivos[1]).map((c) => c.fecha), ["2026-10-05"]); // cierres-...
   assert.deepEqual(leer(archivos[2]).map((g) => g.nombre), ["Alquiler"]); // gastos-fijos-...
+  assert.deepEqual(leer(archivos[3]).map((p) => p.nombre), ["Alcohol", "Gasas"]); // productos-...
 });
 
 test("gastos fijos: agregar, ver pendientes y pagar", async () => {
@@ -145,7 +152,7 @@ test("gastos fijos: editar, eliminar y errores", async () => {
   assert.equal((await cli("fijos", "agregar", "Luz", "del", "consultorio", "80", "servicios", "yape")).error,
     'Error: No se entiende "servicios yape". Si el nombre tiene espacios, ponlo entre comillas: "Luz del consultorio"');
   assert.equal((await cli("fijos", "agregar", "Luz", "80", "consulta", "yape")).error,
-    "Error: La categoría de un gasto debe ser una de: alquiler, insumos, servicios, sueldos, otro");
+    "Error: La categoría de un gasto debe ser una de: alquiler, insumos, compras, servicios, sueldos, otro");
   assert.equal((await cli("fijos", "agregar", "Luz", "80", "servicios", "yape", "--dia")).error,
     "Error: Falta el valor después de --dia (un número del 1 al 31)");
   assert.equal((await cli("fijos", "pagar", "9")).error, "Error: Gasto fijo no encontrado");
@@ -218,7 +225,7 @@ test("cierres lista el historial del mes", async () => {
 test("los errores del servidor se muestran y salen con código 1", async () => {
   assert.deepEqual(await cli("registrar", "ingreso", "150", "alquiler", "yape"), {
     codigo: 1, salida: "",
-    error: "Error: La categoría de un ingreso debe ser una de: consulta, procedimiento, certificado, otro",
+    error: "Error: La categoría de un ingreso debe ser una de: consulta, procedimiento, certificado, venta, otro",
   });
   assert.equal((await cli("registrar", "ingreso", "-5", "consulta", "yape")).error,
     "Error: El campo 'monto' debe ser mayor que 0 y como máximo 1000000");

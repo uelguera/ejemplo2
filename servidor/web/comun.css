@@ -1,0 +1,82 @@
+/* Estilos comunes de las páginas del consultorio (caja.html, productos.html). */
+:root {
+  --fondo: #f5f6f8; --tarjeta: #ffffff; --texto: #1d2330; --suave: #6b7280;
+  --borde: #e2e5ea; --acento: #2563eb; --peligro: #dc2626; --exito: #15803d; --aviso: #b45309;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fondo: #111418; --tarjeta: #1a1f26; --texto: #e7eaee; --suave: #9aa3af;
+    --borde: #2b323c; --acento: #60a5fa; --peligro: #f87171; --exito: #4ade80; --aviso: #fbbf24;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; } /* si no, "form { display: grid }" le gana al atributo hidden */
+body { margin: 0; font: 16px/1.4 system-ui, sans-serif; background: var(--fondo); color: var(--texto); }
+main { max-width: 640px; margin: 40px auto; padding: 0 16px; }
+.cabecera { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+h1 { font-size: 1.6rem; margin: 0 0 16px; }
+a { color: var(--acento); }
+input, select {
+  min-width: 0; padding: 10px 12px; font: inherit; color: inherit;
+  background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 8px;
+}
+button {
+  padding: 8px 14px; font: inherit; font-size: .95rem; color: inherit; cursor: pointer;
+  background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 8px;
+}
+button:hover { border-color: var(--suave); }
+button.principal { background: var(--acento); border-color: var(--acento); color: #fff; }
+label.mes { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.totales { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.total { background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 10px; padding: 10px 12px; }
+.total span { display: block; color: var(--suave); font-size: .85rem; }
+.total strong { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.medios { color: var(--suave); font-size: .9rem; margin: 8px 0 20px; }
+form { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+form .ancho { grid-column: 1 / -1; }
+.botones { display: flex; gap: 8px; }
+.botones .principal { flex: 1; }
+li.editando { outline: 2px solid var(--acento); outline-offset: -2px; border-radius: 10px; }
+.error { color: var(--peligro); min-height: 1.4em; margin: 8px 0 0; }
+h2 { font-size: 1.2rem; margin: 28px 0 12px; }
+.cierre { background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 10px; padding: 12px; }
+.cierre dl { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; margin: 0 0 12px; }
+.cierre dt { color: var(--suave); }
+.cierre dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.cierre dd.resultado { font-weight: 600; }
+.cuadra { color: var(--exito); }
+.falta { color: var(--peligro); }
+.descuadre { color: var(--aviso); }
+.candado { color: var(--suave); font-size: .85rem; white-space: nowrap; }
+.seccion-cabecera { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.seccion-cabecera h2 { margin-bottom: 4px; }
+button.enlace { border: 0; background: none; padding: 0; color: var(--acento); text-decoration: underline; }
+.pie-seccion { color: var(--suave); font-size: .9rem; margin: 0 0 8px; }
+#fijos { margin-bottom: 8px; }
+#form-fijo { margin-bottom: 8px; }
+.pagado { color: var(--exito); font-size: .9rem; white-space: nowrap; }
+li.pagando { flex-wrap: wrap; }
+li .pago { display: flex; gap: 6px; flex-basis: 100%; justify-content: flex-end; flex-wrap: wrap; }
+li .pago input, li .pago select { padding: 4px 8px; }
+ul { list-style: none; margin: 0; padding: 0; background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 10px; }
+li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--borde); }
+li:first-child { border-top: 0; }
+li .fecha { color: var(--suave); font-variant-numeric: tabular-nums; flex: none; }
+li .detalle { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+li .detalle small { display: block; color: var(--suave); }
+li .monto { font-variant-numeric: tabular-nums; white-space: nowrap; }
+li button { padding: 4px 8px; font-size: .85rem; }
+.ingreso { color: var(--exito); }
+.gasto, .borrar { color: var(--peligro); }
+.vacio { padding: 16px; color: var(--suave); text-align: center; display: block; }
+@media (max-width: 480px) {
+  .totales, form { grid-template-columns: 1fr; }
+}
+
+/* Menú de módulos (arriba en todas las páginas) */
+.menu { display: flex; align-items: center; gap: 4px 16px; flex-wrap: wrap; margin: 0 0 24px;
+  padding-bottom: 12px; border-bottom: 1px solid var(--borde); }
+.menu .marca { font-weight: 700; margin-right: auto; }
+.menu a { text-decoration: none; padding: 4px 2px; color: var(--suave); }
+.menu a:hover { color: var(--texto); }
+.menu a[aria-current="page"] { color: var(--acento); font-weight: 600; border-bottom: 2px solid var(--acento); }

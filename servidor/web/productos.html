@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Productos del consultorio</title>
+  <link rel="stylesheet" href="/comun.css">
+  <style>
+    .stock { font-size: .9rem; white-space: nowrap; color: var(--suave); }
+    .stock.descuadre { color: var(--aviso); font-weight: 600; } /* más específico que .stock: si no, queda gris */
+    .stock.falta { color: var(--peligro); font-weight: 600; }
+    .aviso-ok { color: var(--exito); min-height: 1.4em; margin: 8px 0 0; }
+    li .pago .importe { align-self: center; font-variant-numeric: tabular-nums; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <main>
+    <nav class="menu" aria-label="Módulos">
+      <span class="marca">Consultorio</span>
+      <a href="/caja">Caja</a>
+      <a href="/inventario" aria-current="page">Productos</a>
+    </nav>
+    <div class="cabecera">
+      <h1>Productos del consultorio</h1>
+    </div>
+    <p class="pie-seccion">Al vender un producto, el ingreso se registra solo en la Caja y el stock baja.</p>
+
+    <div class="totales">
+      <div class="total"><span>Valor del stock (a costo)</span><strong id="valor">—</strong></div>
+      <div class="total"><span>Productos</span><strong id="cantidad">—</strong></div>
+      <div class="total"><span>Por reponer</span><strong id="por-reponer">—</strong></div>
+    </div>
+
+    <h2>Catálogo</h2>
+    <ul id="lista"></ul>
+    <p id="aviso" class="aviso-ok" role="status"></p>
+    <p id="error" class="error" role="alert"></p>
+
+    <h2 id="titulo-form">Agregar producto</h2>
+    <form id="formulario">
+      <input id="nombre" class="ancho" type="text" placeholder="Nombre, p. ej. Paracetamol 500 mg (caja)" aria-label="Nombre" required>
+      <input id="costo" type="number" min="0" step="0.01" placeholder="Precio de costo (S/)" aria-label="Precio de costo en soles" required>
+      <input id="venta" type="number" min="0.01" step="0.01" placeholder="Precio de venta (S/)" aria-label="Precio de venta en soles" required>
+      <input id="stock" type="number" min="0" step="1" placeholder="Stock (unidades)" aria-label="Stock en unidades">
+      <input id="stock-minimo" type="number" min="0" step="1" placeholder="Avisar cuando queden (unidades)" aria-label="Stock mínimo: avisar cuando queden estas unidades">
+      <p id="ganancia-prevista" class="pie-seccion ancho"></p>
+      <div class="ancho botones">
+        <button id="enviar" class="principal">Agregar producto</button>
+        <button id="cancelar" type="button" hidden>Cancelar</button>
+      </div>
+    </form>
+    <p id="error-form" class="error" role="alert"></p>
+  </main>
+
+  <script src="/comun.js"></script>
+  <script>
+    // Módulo Productos: usa la API de servidor/productos.py (la misma que cliente/productos.js).
+    // pedir, soles, $, hoy, mayuscula, boton, elemento y MEDIOS vienen de /comun.js.
+    const lista = $("lista");
+    const error = $("error");
+    const errorForm = $("error-form");
+    const aviso = $("aviso");
+    let editando = null; // id del producto cargado en el formulario, o null si se agrega uno nuevo
+
+    // accion(cambio, destino): hace el cambio, muestra el error si lo hay y vuelve a pintar todo.
+    const accion = crearAccion(cargar, [error, errorForm]);
+    const enCentimos = (monto) => Math.round(monto * 100); // para sumar y multiplicar sin errores de redondeo
+
+    async function cargar() {
+      const productos = await pedir("GET", "/productos");
+      const valor = productos.reduce((suma, p) => suma + enCentimos(p.costo) * p.stock, 0) / 100;
+      const porReponer = productos.filter((p) => p.estado_stock !== "ok").length;
+      $("valor").textContent = soles.format(valor);
+      $("cantidad").textContent = productos.length;
+      $("por-reponer").textContent = porReponer;
+      $("por-reponer").className = porReponer ? "descuadre" : "";
+
+      if (productos.length) {
+        lista.replaceChildren(...productos.map(crearFila));
+      } else {
+        lista.replaceChildren(elemento("li", "Todavía no hay productos. Agrega el primero con el formulario de abajo.", "vacio"));
+      }
+    }
+
+    function textoStock(p) {
+      if (p.estado_stock === "agotado") return elemento("span", "Agotado", "stock falta");
+      if (p.estado_stock === "bajo") return elemento("span", `Quedan ${p.stock}`, "stock descuadre");
+      return elemento("span", `${p.stock} en stock`, "stock");
+    }
+
+    function crearFila(p) {
+      const fila = document.createElement("li");
+      fila.classList.toggle("editando", p.id === editando);
+
+      // textContent: el nombre nunca se interpreta como HTML
+      const detalle = elemento("span", p.nombre, "detalle");
+      const precios = elemento("small",
+        `Costo ${soles.format(p.costo)} · Venta ${soles.format(p.venta)} · Ganancia ${soles.format(p.ganancia)} (${p.margen}%)`);
+      if (p.ganancia < 0) precios.classList.add("falta");
+      detalle.append(precios);
+
+      const vender = boton("Vender", () => mostrarPanel(fila, panelVenta(p)), "principal");
+      vender.disabled = p.stock === 0;
+      const reponer = boton("Reponer", () => mostrarPanel(fila, panelReposicion(p)));
+      const editar = boton("Editar", () => empezarEdicion(p, fila));
+      const borrar = boton("Eliminar", () => accion(async () => {
+        await pedir("DELETE", `/productos/${p.id}`);
+        if (p.id === editando) terminarEdicion();
+        aviso.textContent = `Eliminado: ${p.nombre}. Sus ventas ya registradas siguen en la caja.`;
+      }), "borrar");
+      for (const b of [vender, reponer, editar, borrar]) b.setAttribute("aria-label", `${b.textContent} ${p.nombre}`);
+
+      fila.append(detalle, textoStock(p), vender, reponer, editar, borrar);
+      return fila;
+    }
+
+    // Abre, debajo de la fila, el panel para vender o reponer (solo uno abierto a la vez).
+    function mostrarPanel(fila, panel) {
+      for (const otra of lista.children) {
+        otra.classList.remove("pagando");
+        otra.querySelector(".pago")?.remove();
+      }
+      aviso.textContent = error.textContent = "";
+      fila.classList.add("pagando");
+      fila.append(panel);
+      panel.querySelector("input").focus();
+    }
+
+    function campoNumero(etiqueta, valor, minimo, maximo) {
+      const campo = document.createElement("input");
+      campo.type = "number";
+      campo.min = minimo;
+      if (maximo) campo.max = maximo;
+      campo.step = 1;
+      campo.value = valor;
+      campo.style.width = "6em";
+      campo.setAttribute("aria-label", etiqueta);
+      return campo;
+    }
+
+    function campoFecha(etiqueta) {
+      const fecha = document.createElement("input");
+      fecha.type = "date";
+      fecha.value = hoy();
+      fecha.setAttribute("aria-label", etiqueta);
+      return fecha;
+    }
+
+    function panelVenta(p) {
+      const cantidad = campoNumero(`Unidades de ${p.nombre} a vender`, 1, 1, p.stock);
+      const medio = document.createElement("select");
+      medio.replaceChildren(...MEDIOS.map((m) => new Option(mayuscula(m), m)));
+      medio.setAttribute("aria-label", "Medio de pago");
+      const fecha = campoFecha("Fecha de la venta");
+      const total = elemento("span", "", "importe");
+      const actualizar = () => { total.textContent = `Total: ${soles.format(enCentimos(p.venta) * (Number(cantidad.value) || 0) / 100)}`; };
+      cantidad.addEventListener("input", actualizar);
+      actualizar();
+
+      const confirmar = boton("Confirmar venta", () => accion(async () => {
+        const { movimiento } = await pedir("POST", `/productos/${p.id}/vender`,
+          { cantidad: cantidad.value, medio: medio.value, fecha: fecha.value });
+        aviso.textContent = `Vendido: ${movimiento.descripcion} por ${soles.format(movimiento.monto)} (${movimiento.medio}), registrado en la caja.`;
+      }), "principal");
+      const panel = elemento("span", "", "pago");
+      panel.append(cantidad, medio, fecha, total, confirmar, boton("Cancelar", () => accion(() => {})));
+      return panel;
+    }
+
+    function panelReposicion(p) {
+      const cantidad = campoNumero(`Unidades de ${p.nombre} que llegaron`, "", 1);
+      cantidad.placeholder = "Unidades";
+      const pago = document.createElement("select");
+      pago.replaceChildren(
+        new Option("Sin registrar gasto", ""),
+        ...MEDIOS.map((m) => new Option(`Pagado en ${m} (registrar gasto)`, m)),
+      );
+      pago.setAttribute("aria-label", "¿Registrar la compra en la caja?");
+      const fecha = campoFecha("Fecha de la compra");
+      const total = elemento("span", "", "importe");
+      const actualizar = () => {
+        fecha.hidden = total.hidden = !pago.value;
+        total.textContent = `Gasto: ${soles.format(enCentimos(p.costo) * (Number(cantidad.value) || 0) / 100)}`;
+      };
+      cantidad.addEventListener("input", actualizar);
+      pago.addEventListener("change", actualizar);
+      actualizar();
+
+      const confirmar = boton("Confirmar", () => accion(async () => {
+        const cuerpo = { cantidad: cantidad.value };
+        if (pago.value) Object.assign(cuerpo, { pagado_con: pago.value, fecha: fecha.value });
+        const { producto, movimiento } = await pedir("POST", `/productos/${p.id}/reponer`, cuerpo);
+        aviso.textContent = `Repuesto: ${p.nombre}, ahora hay ${producto.stock}.`
+          + (movimiento ? ` Gasto de ${soles.format(movimiento.monto)} registrado en la caja.` : "");
+      }), "principal");
+      const panel = elemento("span", "", "pago");
+      panel.append(cantidad, pago, fecha, total, confirmar, boton("Cancelar", () => accion(() => {})));
+      return panel;
+    }
+
+    // ---- Agregar / editar ----
+
+    function gananciaPrevista() {
+      const costo = Number($("costo").value), venta = Number($("venta").value);
+      if (!$("costo").value || !$("venta").value || venta <= 0) {
+        $("ganancia-prevista").textContent = "";
+        return;
+      }
+      const ganancia = (enCentimos(venta) - enCentimos(costo)) / 100;
+      $("ganancia-prevista").textContent = `Ganancia por unidad: ${soles.format(ganancia)} (${(ganancia / venta * 100).toFixed(1)}% del precio de venta)`;
+      $("ganancia-prevista").className = `pie-seccion ancho ${ganancia < 0 ? "falta" : ""}`;
+    }
+
+    function empezarEdicion(p, fila) {
+      editando = p.id;
+      $("nombre").value = p.nombre;
+      $("costo").value = p.costo;
+      $("venta").value = p.venta;
+      $("stock").value = p.stock;
+      $("stock-minimo").value = p.stock_minimo;
+      $("titulo-form").textContent = `Editar: ${p.nombre}`;
+      $("enviar").textContent = "Guardar cambios";
+      $("cancelar").hidden = false;
+      errorForm.textContent = aviso.textContent = "";
+      for (const otra of lista.children) otra.classList.toggle("editando", otra === fila);
+      gananciaPrevista();
+      $("formulario").scrollIntoView({ behavior: "smooth", block: "center" });
+      $("nombre").focus({ preventScroll: true });
+    }
+
+    function terminarEdicion() {
+      editando = null;
+      $("formulario").reset();
+      $("titulo-form").textContent = "Agregar producto";
+      $("enviar").textContent = "Agregar producto";
+      $("cancelar").hidden = true;
+      gananciaPrevista();
+      for (const fila of lista.children) fila.classList.remove("editando");
+    }
+
+    $("costo").addEventListener("input", gananciaPrevista);
+    $("venta").addEventListener("input", gananciaPrevista);
+    $("cancelar").addEventListener("click", () => { terminarEdicion(); errorForm.textContent = ""; });
+
+    $("formulario").addEventListener("submit", (e) => {
+      e.preventDefault();
+      accion(async () => {
+        const datos = {
+          nombre: $("nombre").value,
+          costo: $("costo").value,
+          venta: $("venta").value,
+          stock: $("stock").value || 0,
+          stock_minimo: $("stock-minimo").value || 0,
+        };
+        const producto = editando === null
+          ? await pedir("POST", "/productos", datos)
+          : await pedir("PATCH", `/productos/${editando}`, datos);
+        aviso.textContent = `${editando === null ? "Agregado" : "Guardado"}: ${producto.nombre}.`;
+        terminarEdicion();
+        $("nombre").focus();
+      }, errorForm);
+    });
+
+    accion(() => {});
+  </script>
+</body>
+</html>
