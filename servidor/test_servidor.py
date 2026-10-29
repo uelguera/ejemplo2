@@ -138,6 +138,42 @@ class PruebasCaja(unittest.TestCase):
             },
         })
 
+    def test_editar_solo_lo_que_cambia(self):
+        self.registrar(descripcion="Control")
+        estado, movimiento = self.pedir("PATCH", "/movimientos/1", {"monto": "180.50", "medio": "efectivo"})
+        self.assertEqual(estado, 200)
+        self.assertEqual(movimiento, {"id": 1, "tipo": "ingreso", "monto": 180.5, "fecha": "2026-10-05",
+                                      "categoria": "consulta", "medio": "efectivo", "descripcion": "Control"})
+        self.assertEqual(self.pedir("GET", "/movimientos?mes=2026-10")[1], [movimiento])
+
+    def test_editar_cambia_el_resumen_y_el_mes(self):
+        self.registrar()
+        self.pedir("PATCH", "/movimientos/1", {"tipo": "gasto", "categoria": "insumos", "fecha": "2026-09-30"})
+        self.assertEqual(self.pedir("GET", "/movimientos?mes=2026-10")[1], [])
+        resumen = self.pedir("GET", "/resumen?mes=2026-09")[1]
+        self.assertEqual((resumen["ingresos"], resumen["gastos"]), (0.0, 150.0))
+
+    def test_editar_con_datos_invalidos_no_cambia_nada(self):
+        self.registrar()
+        invalidos = [
+            {"tipo": "gasto"},  # "consulta" no es categoría de gasto
+            {"monto": -1},
+            {"fecha": "2026-13-01"},
+            {"id": 7},
+            {"precio": 10},
+            {},
+        ]
+        for cambios in invalidos:
+            with self.subTest(cambios):
+                estado, cuerpo = self.pedir("PATCH", "/movimientos/1", cambios)
+                self.assertEqual(estado, 400)
+                self.assertIn("error", cuerpo)
+        self.assertEqual(self.pedir("GET", "/movimientos?mes=2026-10")[1][0]["monto"], 150.0)
+
+    def test_editar_inexistente_da_404(self):
+        self.assertEqual(self.pedir("PATCH", "/movimientos/99", {"monto": 10})[0], 404)
+        self.assertEqual(self.pedir("PATCH", "/movimientos/abc", {"monto": 10})[0], 404)
+
     def test_eliminar(self):
         self.registrar()
         self.assertEqual(self.pedir("DELETE", "/movimientos/1"), (204, None))

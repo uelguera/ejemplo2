@@ -7,8 +7,10 @@
 //   node caja.js listar                   (mes actual)
 //   node caja.js listar 2026-09
 //   node caja.js resumen                  (mes actual; o: resumen 2026-09)
+//   node caja.js editar 3 monto=40 medio=yape   (solo los campos que cambian)
+//   node caja.js editar 3 descripcion="Guantes y gasas"
 //   node caja.js eliminar 3
-//   node caja.js respaldar                (copia en respaldos/ del proyecto)
+//   node caja.js respaldar              (copia en respaldos/ del proyecto)
 //   node caja.js respaldar E:\copias      (o en la carpeta indicada)
 //
 // Categorías de ingreso: consulta, procedimiento, certificado, otro
@@ -53,6 +55,19 @@ export function formatearResumen(r) {
   ].join("\n");
 }
 
+// ["monto=40", "descripcion=Guantes y gasas"] -> { monto: "40", descripcion: "Guantes y gasas" }
+// Qué campos existen lo valida el servidor.
+export function leerCambios(pares) {
+  if (!pares.length) throw new Error("Indica qué cambiar, por ejemplo: editar 3 monto=40 medio=yape");
+  const cambios = {};
+  for (const par of pares) {
+    const igual = par.indexOf("=");
+    if (igual < 1) throw new Error(`"${par}" no tiene la forma campo=valor (por ejemplo monto=40)`);
+    cambios[par.slice(0, igual)] = par.slice(igual + 1);
+  }
+  return cambios;
+}
+
 const comandos = {
   async registrar(tipo, monto, categoria, medio, ...resto) {
     let fecha;
@@ -74,6 +89,10 @@ const comandos = {
   async resumen(mes = mesActual()) {
     console.log(formatearResumen(await pedir("GET", `/resumen?mes=${encodeURIComponent(mes)}`)));
   },
+  async editar(id, ...pares) {
+    const movimiento = await pedir("PATCH", `/movimientos/${id}`, leerCambios(pares));
+    console.log(`Editado: ${formatearMovimiento(movimiento)}`);
+  },
   async eliminar(id) {
     await pedir("DELETE", `/movimientos/${id}`);
     console.log(`Eliminado el movimiento ${id}.`);
@@ -88,5 +107,5 @@ const comandos = {
 
 // Solo se ejecuta si se llama directamente (no al importarlo desde las pruebas).
 if (import.meta.main) {
-  ejecutarComandos(comandos, "Uso: node caja.js <registrar ingreso|gasto <monto> <categoria> efectivo|yape [\"descripcion\"] [--fecha AAAA-MM-DD] | listar [AAAA-MM] | resumen [AAAA-MM] | eliminar <id> | respaldar [carpeta]>");
+  ejecutarComandos(comandos, "Uso: node caja.js <registrar ingreso|gasto <monto> <categoria> efectivo|yape [\"descripcion\"] [--fecha AAAA-MM-DD] | listar [AAAA-MM] | resumen [AAAA-MM] | editar <id> campo=valor... | eliminar <id> | respaldar [carpeta]>");
 }

@@ -7,6 +7,7 @@ Endpoints:
     POST   /movimientos       -> registra un movimiento (cuerpo: {"tipo": "ingreso"|"gasto",
                                  "monto": 150, "categoria": "...", "medio": "efectivo"|"yape",
                                  "fecha": "AAAA-MM-DD" (opcional, hoy), "descripcion": "..." (opcional)})
+    PATCH  /movimientos/<id>  -> cambia uno o más campos (mismo cuerpo que POST, solo lo que cambia)
     DELETE /movimientos/<id>  -> elimina un movimiento
     GET    /resumen           -> totales de un mes (?mes=AAAA-MM; por defecto el actual)
 
@@ -36,6 +37,7 @@ CATEGORIAS = {
 }
 MEDIOS = ("efectivo", "yape")
 MONTO_MAXIMO = Decimal("1000000")
+CAMPOS = ("tipo", "monto", "categoria", "medio", "fecha", "descripcion")
 
 
 def validar_fecha(texto: str, patron: str, relleno: str) -> bool:
@@ -110,6 +112,17 @@ class Caja:
         movimientos.append(movimiento)
         self.escribir(movimientos)
         return movimiento
+
+    def actualizar(self, id_movimiento: int, cambios: dict) -> dict | None:
+        """Aplica los cambios y vuelve a validar el movimiento completo (lanza ValueError si no es válido)."""
+        movimientos = self.leer()
+        for posicion, movimiento in enumerate(movimientos):
+            if movimiento["id"] == id_movimiento:
+                actualizado = {"id": id_movimiento, **validar_movimiento({**movimiento, **cambios})}
+                movimientos[posicion] = actualizado
+                self.escribir(movimientos)
+                return actualizado
+        return None
 
     def eliminar(self, id_movimiento: int) -> bool:
         movimientos = self.leer()
@@ -208,6 +221,27 @@ def crear_manejador(caja: Caja):
             except ValueError as e:
                 return self._responder(400, {"error": str(e)})
             self._responder(201, caja.registrar(datos))
+
+        def do_PATCH(self):
+            id_movimiento = self._id_de_ruta()
+            if id_movimiento is None:
+                return self._responder(404, {"error": "Movimiento no encontrado"})
+            cuerpo = self._leer_cuerpo()
+            if cuerpo is None:
+                return self._responder(400, {"error": "JSON inválido"})
+            desconocidos = sorted(set(cuerpo) - set(CAMPOS))
+            if desconocidos:
+                return self._responder(400, {"error": f"No se puede cambiar: {', '.join(desconocidos)}. "
+                                                      f"Campos válidos: {', '.join(CAMPOS)}"})
+            if not cuerpo:
+                return self._responder(400, {"error": "Indica al menos un campo para cambiar"})
+            try:
+                movimiento = caja.actualizar(id_movimiento, cuerpo)
+            except ValueError as e:
+                return self._responder(400, {"error": str(e)})
+            if movimiento is None:
+                return self._responder(404, {"error": "Movimiento no encontrado"})
+            self._responder(200, movimiento)
 
         def do_DELETE(self):
             id_movimiento = self._id_de_ruta()

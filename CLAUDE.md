@@ -15,7 +15,7 @@ Control de ingresos y gastos de un consultorio, en soles, pagados en efectivo o 
 | Tarea | Comando |
 |---|---|
 | Levantar servidor | `python servidor/servidor.py` (puerto 8001, para convivir con ejemplo1 en el 8000) |
-| Usar el cliente | `node cliente/caja.js registrar ingreso\|gasto <monto> <categoria> efectivo\|yape ["..."] [--fecha AAAA-MM-DD]` · `listar [AAAA-MM]` · `resumen [AAAA-MM]` · `eliminar <id>` · `respaldar [carpeta]` |
+| Usar el cliente | `node cliente/caja.js registrar ingreso\|gasto <monto> <categoria> efectivo\|yape ["..."] [--fecha AAAA-MM-DD]` · `listar [AAAA-MM]` · `resumen [AAAA-MM]` · `editar <id> campo=valor...` · `eliminar <id>` · `respaldar [carpeta]` |
 | Pruebas Python | `cd servidor && python -m unittest -v` |
 | Pruebas Node | `cd cliente && npm test` (levantan el servidor real: necesitan `python`) |
 

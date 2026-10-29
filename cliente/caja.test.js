@@ -1,7 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatearMovimiento, formatearResumen, formatearSoles, mesActual } from "./caja.js";
+import { formatearMovimiento, formatearResumen, formatearSoles, leerCambios, mesActual } from "./caja.js";
 import { nombreRespaldo } from "./api.js";
+
+test("los cambios se leen como campo=valor; el valor puede tener espacios y signos =", () => {
+  assert.deepEqual(leerCambios(["monto=40", "descripcion=Pago a=b y c"]), { monto: "40", descripcion: "Pago a=b y c" });
+  assert.deepEqual(leerCambios(["descripcion="]), { descripcion: "" });
+  assert.throws(() => leerCambios([]), /Indica qué cambiar/);
+  assert.throws(() => leerCambios(["=40"]), /no tiene la forma campo=valor/);
+});
 
 test("el nombre del respaldo lleva fecha y hora con ceros a la izquierda", () => {
   assert.equal(nombreRespaldo("caja", new Date(2026, 0, 2, 9, 5, 3)), "caja-2026-01-02_09-05-03.json");

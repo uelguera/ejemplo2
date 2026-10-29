@@ -62,6 +62,26 @@ test("resumen del mes", async () => {
   ].join("\n"));
 });
 
+test("editar cambia solo los campos indicados", async () => {
+  await cli("registrar", "gasto", "35.50", "insumos", "efectivo", "Guantes", "--fecha", "2026-10-02");
+  assert.deepEqual(await cli("editar", "1", "monto=40", "medio=yape", "descripcion=Guantes y gasas"), {
+    codigo: 0, salida: "Editado: 1. 2026-10-02  - S/ 40.00  insumos · yape · Guantes y gasas", error: "",
+  });
+  assert.equal((await cli("listar", "2026-10")).salida, "1. 2026-10-02  - S/ 40.00  insumos · yape · Guantes y gasas");
+});
+
+test("editar muestra los errores sin cambiar nada", async () => {
+  await cli("registrar", "ingreso", "150", "consulta", "yape", "--fecha", "2026-10-05");
+  assert.equal((await cli("editar", "1")).error, "Error: Indica qué cambiar, por ejemplo: editar 3 monto=40 medio=yape");
+  assert.equal((await cli("editar", "1", "40")).error, 'Error: "40" no tiene la forma campo=valor (por ejemplo monto=40)');
+  assert.equal((await cli("editar", "1", "precio=40")).error,
+    "Error: No se puede cambiar: precio. Campos válidos: tipo, monto, categoria, medio, fecha, descripcion");
+  assert.equal((await cli("editar", "1", "tipo=gasto")).error,
+    "Error: La categoría de un gasto debe ser una de: alquiler, insumos, servicios, sueldos, otro");
+  assert.equal((await cli("editar", "99", "monto=1")).error, "Error: Movimiento no encontrado");
+  assert.equal((await cli("listar", "2026-10")).salida, "1. 2026-10-05  + S/ 150.00  consulta · yape");
+});
+
 test("eliminar quita el movimiento", async () => {
   await cli("registrar", "ingreso", "150", "consulta", "yape", "--fecha", "2026-10-05");
   assert.equal((await cli("eliminar", "1")).salida, "Eliminado el movimiento 1.");

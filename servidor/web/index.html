@@ -39,6 +39,9 @@
     .medios { color: var(--suave); font-size: .9rem; margin: 8px 0 20px; }
     form { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
     form .ancho { grid-column: 1 / -1; }
+    .botones { display: flex; gap: 8px; }
+    .botones .principal { flex: 1; }
+    li.editando { outline: 2px solid var(--acento); outline-offset: -2px; border-radius: 10px; }
     #error { color: var(--peligro); min-height: 1.4em; margin: 8px 0 0; }
     ul { list-style: none; margin: 0; padding: 0; background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 10px; }
     li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--borde); }
@@ -83,7 +86,10 @@
       </select>
       <input id="fecha" type="date" aria-label="Fecha" required>
       <input id="descripcion" type="text" placeholder="Descripción (sin nombres de pacientes)" aria-label="Descripción">
-      <button class="principal ancho">Registrar</button>
+      <div class="ancho botones">
+        <button id="enviar" class="principal">Registrar</button>
+        <button id="cancelar" type="button" hidden>Cancelar</button>
+      </div>
     </form>
     <p id="error" role="alert"></p>
 
@@ -103,6 +109,7 @@
     const error = $("error");
     const hoy = () => new Date().toLocaleDateString("en-CA"); // AAAA-MM-DD en hora local
     const mayuscula = (texto) => texto.charAt(0).toUpperCase() + texto.slice(1);
+    let editando = null; // id del movimiento cargado en el formulario, o null si se registra uno nuevo
 
     async function pedir(metodo, ruta, cuerpo) {
       let respuesta;
@@ -156,6 +163,7 @@
 
     function crearFila(m) {
       const fila = document.createElement("li");
+      fila.classList.toggle("editando", m.id === editando);
 
       const fecha = document.createElement("span");
       fecha.className = "fecha";
@@ -179,9 +187,18 @@
       borrar.className = "borrar";
       borrar.textContent = "Eliminar";
       borrar.setAttribute("aria-label", `Eliminar ${m.tipo} de ${soles.format(m.monto)} del ${fecha.textContent}`);
-      borrar.addEventListener("click", () => accion(() => pedir("DELETE", `/movimientos/${m.id}`)));
+      borrar.addEventListener("click", () => accion(async () => {
+        await pedir("DELETE", `/movimientos/${m.id}`);
+        if (m.id === editando) terminarEdicion();
+      }));
 
-      fila.append(fecha, detalle, monto, borrar);
+      const editar = document.createElement("button");
+      editar.type = "button";
+      editar.textContent = "Editar";
+      editar.setAttribute("aria-label", `Editar ${m.tipo} de ${soles.format(m.monto)} del ${fecha.textContent}`);
+      editar.addEventListener("click", () => empezarEdicion(m, fila));
+
+      fila.append(fecha, detalle, monto, editar, borrar);
       return fila;
     }
 
@@ -189,23 +206,54 @@
       $("categoria").replaceChildren(...CATEGORIAS[$("tipo").value].map((c) => new Option(mayuscula(c), c)));
     }
 
+    // Carga el movimiento en el formulario; al guardar se envía como PATCH en vez de POST.
+    function empezarEdicion(m, fila) {
+      editando = m.id;
+      $("tipo").value = m.tipo;
+      llenarCategorias();
+      $("categoria").value = m.categoria;
+      $("monto").value = m.monto;
+      $("medio").value = m.medio;
+      $("fecha").value = m.fecha;
+      $("descripcion").value = m.descripcion;
+      $("enviar").textContent = "Guardar cambios";
+      $("cancelar").hidden = false;
+      error.textContent = "";
+      for (const otra of lista.children) otra.classList.toggle("editando", otra === fila);
+      $("formulario").scrollIntoView({ behavior: "smooth", block: "center" });
+      $("monto").focus({ preventScroll: true });
+    }
+
+    // Vuelve al modo "registrar": limpia monto y descripción, conserva tipo, medio y fecha.
+    function terminarEdicion() {
+      editando = null;
+      $("monto").value = "";
+      $("descripcion").value = "";
+      $("enviar").textContent = "Registrar";
+      $("cancelar").hidden = true;
+      for (const fila of lista.children) fila.classList.remove("editando");
+    }
+
     $("tipo").addEventListener("change", llenarCategorias);
     $("mes").addEventListener("change", () => { if ($("mes").value) accion(() => {}); });
+    $("cancelar").addEventListener("click", () => { terminarEdicion(); error.textContent = ""; });
 
     $("formulario").addEventListener("submit", (e) => {
       e.preventDefault();
       accion(async () => {
-        const movimiento = await pedir("POST", "/movimientos", {
+        const datos = {
           tipo: $("tipo").value,
           monto: $("monto").value,
           categoria: $("categoria").value,
           medio: $("medio").value,
           fecha: $("fecha").value,
           descripcion: $("descripcion").value,
-        });
-        $("mes").value = movimiento.fecha.slice(0, 7); // muestra el mes donde quedó registrado
-        $("monto").value = "";
-        $("descripcion").value = "";
+        };
+        const movimiento = editando === null
+          ? await pedir("POST", "/movimientos", datos)
+          : await pedir("PATCH", `/movimientos/${editando}`, datos);
+        $("mes").value = movimiento.fecha.slice(0, 7); // muestra el mes donde quedó el movimiento
+        terminarEdicion();
         $("monto").focus();
       });
     });
