@@ -1,0 +1,31 @@
+# Ejecuta las dos suites de pruebas en GitHub con cada push y cada pull request.
+name: Pruebas
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v5
+
+      - name: Instalar Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Instalar Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "26"
+
+      - name: Pruebas del servidor (Python)
+        working-directory: servidor
+        run: python -W error::ResourceWarning -m unittest -v
+
+      - name: Pruebas del cliente (Node, contra el servidor real)
+        working-directory: cliente
+        run: npm test

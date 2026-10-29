@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Caja del consultorio</title>
+  <style>
+    :root {
+      --fondo: #f5f6f8; --tarjeta: #ffffff; --texto: #1d2330; --suave: #6b7280;
+      --borde: #e2e5ea; --acento: #2563eb; --peligro: #dc2626; --exito: #15803d;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fondo: #111418; --tarjeta: #1a1f26; --texto: #e7eaee; --suave: #9aa3af;
+        --borde: #2b323c; --acento: #60a5fa; --peligro: #f87171; --exito: #4ade80;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 16px/1.4 system-ui, sans-serif; background: var(--fondo); color: var(--texto); }
+    main { max-width: 640px; margin: 40px auto; padding: 0 16px; }
+    .cabecera { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    h1 { font-size: 1.6rem; margin: 0 0 16px; }
+    a { color: var(--acento); }
+    input, select {
+      min-width: 0; padding: 10px 12px; font: inherit; color: inherit;
+      background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 8px;
+    }
+    button {
+      padding: 8px 14px; font: inherit; font-size: .95rem; color: inherit; cursor: pointer;
+      background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 8px;
+    }
+    button:hover { border-color: var(--suave); }
+    button.principal { background: var(--acento); border-color: var(--acento); color: #fff; }
+    label.mes { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+    .totales { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .total { background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 10px; padding: 10px 12px; }
+    .total span { display: block; color: var(--suave); font-size: .85rem; }
+    .total strong { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+    .medios { color: var(--suave); font-size: .9rem; margin: 8px 0 20px; }
+    form { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    form .ancho { grid-column: 1 / -1; }
+    #error { color: var(--peligro); min-height: 1.4em; margin: 8px 0 0; }
+    ul { list-style: none; margin: 0; padding: 0; background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 10px; }
+    li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--borde); }
+    li:first-child { border-top: 0; }
+    li .fecha { color: var(--suave); font-variant-numeric: tabular-nums; flex: none; }
+    li .detalle { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    li .detalle small { display: block; color: var(--suave); }
+    li .monto { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    li button { padding: 4px 8px; font-size: .85rem; }
+    .ingreso { color: var(--exito); }
+    .gasto, .borrar { color: var(--peligro); }
+    .vacio { padding: 16px; color: var(--suave); text-align: center; display: block; }
+    @media (max-width: 480px) {
+      .totales, form { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="cabecera">
+      <h1>Caja del consultorio</h1>
+    </div>
+
+    <label class="mes">Mes <input id="mes" type="month" required></label>
+    <div class="totales">
+      <div class="total"><span>Ingresos</span><strong id="ingresos" class="ingreso">—</strong></div>
+      <div class="total"><span>Gastos</span><strong id="gastos" class="gasto">—</strong></div>
+      <div class="total"><span>Saldo</span><strong id="saldo">—</strong></div>
+    </div>
+    <p class="medios" id="medios"></p>
+
+    <form id="formulario">
+      <select id="tipo" aria-label="Tipo">
+        <option value="ingreso">Ingreso</option>
+        <option value="gasto">Gasto</option>
+      </select>
+      <input id="monto" type="number" min="0.01" step="0.01" placeholder="Monto (S/)" aria-label="Monto en soles" required>
+      <select id="categoria" aria-label="Categoría"></select>
+      <select id="medio" aria-label="Medio de pago">
+        <option value="efectivo">Efectivo</option>
+        <option value="yape">Yape</option>
+      </select>
+      <input id="fecha" type="date" aria-label="Fecha" required>
+      <input id="descripcion" type="text" placeholder="Descripción (sin nombres de pacientes)" aria-label="Descripción">
+      <button class="principal ancho">Registrar</button>
+    </form>
+    <p id="error" role="alert"></p>
+
+    <ul id="lista"></ul>
+  </main>
+
+  <script>
+    // Usa la API de servidor.py (la misma que cliente/caja.js).
+    // Las categorías son las mismas que CATEGORIAS en servidor.py: si cambias una, cambia la otra.
+    const CATEGORIAS = {
+      ingreso: ["consulta", "procedimiento", "certificado", "otro"],
+      gasto: ["alquiler", "insumos", "servicios", "sueldos", "otro"],
+    };
+    const soles = new Intl.NumberFormat("es-PE", { style: "currency", currency: "PEN" });
+    const $ = (id) => document.getElementById(id);
+    const lista = $("lista");
+    const error = $("error");
+    const hoy = () => new Date().toLocaleDateString("en-CA"); // AAAA-MM-DD en hora local
+    const mayuscula = (texto) => texto.charAt(0).toUpperCase() + texto.slice(1);
+
+    async function pedir(metodo, ruta, cuerpo) {
+      let respuesta;
+      try {
+        respuesta = await fetch(ruta, {
+          method: metodo,
+          headers: { "Content-Type": "application/json" },
+          body: cuerpo ? JSON.stringify(cuerpo) : undefined,
+        });
+      } catch {
+        throw new Error("No se pudo conectar con el servidor. ¿Está corriendo? (python servidor/servidor.py)");
+      }
+      const texto = await respuesta.text();
+      const datos = texto ? JSON.parse(texto) : null;
+      if (!respuesta.ok) {
+        throw new Error(datos?.error ?? `Error HTTP ${respuesta.status}`);
+      }
+      return datos;
+    }
+
+    // Ejecuta un cambio, muestra el error si lo hay y siempre vuelve a pintar el mes.
+    async function accion(cambio) {
+      error.textContent = "";
+      try { await cambio(); } catch (e) { error.textContent = e.message; }
+      try { await cargar(); } catch (e) { error.textContent = e.message; }
+    }
+
+    async function cargar() {
+      const mes = $("mes").value;
+      const [movimientos, resumen] = await Promise.all([
+        pedir("GET", `/movimientos?mes=${mes}`),
+        pedir("GET", `/resumen?mes=${mes}`),
+      ]);
+      $("ingresos").textContent = soles.format(resumen.ingresos);
+      $("gastos").textContent = soles.format(resumen.gastos);
+      $("saldo").textContent = soles.format(resumen.saldo);
+      $("saldo").className = resumen.saldo < 0 ? "gasto" : "";
+      $("medios").textContent = Object.entries(resumen.por_medio)
+        .map(([medio, t]) => `${mayuscula(medio)}: ${soles.format(t.saldo)}`)
+        .join(" · ");
+
+      if (movimientos.length) {
+        lista.replaceChildren(...movimientos.map(crearFila));
+      } else {
+        const vacio = document.createElement("li");
+        vacio.className = "vacio";
+        vacio.textContent = "No hay movimientos este mes.";
+        lista.replaceChildren(vacio);
+      }
+    }
+
+    function crearFila(m) {
+      const fila = document.createElement("li");
+
+      const fecha = document.createElement("span");
+      fecha.className = "fecha";
+      const [, mesNum, dia] = m.fecha.split("-");
+      fecha.textContent = `${dia}/${mesNum}`;
+
+      // textContent: la descripción nunca se interpreta como HTML
+      const detalle = document.createElement("span");
+      detalle.className = "detalle";
+      detalle.textContent = mayuscula(m.categoria);
+      const extra = document.createElement("small");
+      extra.textContent = [mayuscula(m.medio), m.descripcion].filter(Boolean).join(" · ");
+      detalle.append(extra);
+
+      const monto = document.createElement("span");
+      monto.className = `monto ${m.tipo}`;
+      monto.textContent = `${m.tipo === "gasto" ? "−" : "+"} ${soles.format(m.monto)}`;
+
+      const borrar = document.createElement("button");
+      borrar.type = "button";
+      borrar.className = "borrar";
+      borrar.textContent = "Eliminar";
+      borrar.setAttribute("aria-label", `Eliminar ${m.tipo} de ${soles.format(m.monto)} del ${fecha.textContent}`);
+      borrar.addEventListener("click", () => accion(() => pedir("DELETE", `/movimientos/${m.id}`)));
+
+      fila.append(fecha, detalle, monto, borrar);
+      return fila;
+    }
+
+    function llenarCategorias() {
+      $("categoria").replaceChildren(...CATEGORIAS[$("tipo").value].map((c) => new Option(mayuscula(c), c)));
+    }
+
+    $("tipo").addEventListener("change", llenarCategorias);
+    $("mes").addEventListener("change", () => { if ($("mes").value) accion(() => {}); });
+
+    $("formulario").addEventListener("submit", (e) => {
+      e.preventDefault();
+      accion(async () => {
+        const movimiento = await pedir("POST", "/movimientos", {
+          tipo: $("tipo").value,
+          monto: $("monto").value,
+          categoria: $("categoria").value,
+          medio: $("medio").value,
+          fecha: $("fecha").value,
+          descripcion: $("descripcion").value,
+        });
+        $("mes").value = movimiento.fecha.slice(0, 7); // muestra el mes donde quedó registrado
+        $("monto").value = "";
+        $("descripcion").value = "";
+        $("monto").focus();
+      });
+    });
+
+    $("fecha").value = hoy();
+    $("mes").value = hoy().slice(0, 7);
+    llenarCategorias();
+    accion(() => {});
+  </script>
+</body>
+</html>

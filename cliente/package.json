@@ -1,0 +1,11 @@
+{
+  "name": "caja-cliente",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cliente de línea de comandos para la caja del consultorio",
+  "scripts": {
+    "caja": "node caja.js",
+    "test": "node --test"
+  }
+}
