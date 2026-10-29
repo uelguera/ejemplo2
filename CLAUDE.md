@@ -5,6 +5,7 @@ Control de ingresos y gastos de un consultorio, en soles, pagados en efectivo o 
 ## Arquitectura
 
 - `servidor/servidor.py` — API HTTP en Python (solo librería estándar). Guarda en `servidor/movimientos.json` y `servidor/cierres.json` (fuera de git: son datos financieros reales).
+- Gastos fijos (`servidor/gastos_fijos.json`): plantillas mensuales. "Pagar" crea un movimiento con `gasto_fijo: <id>`; un gasto está pagado en un mes si existe ese movimiento (no hay otro estado guardado).
 - Cierre de caja: cada día empieza en S/ 0 de efectivo (el usuario se lleva todo). El cierre guarda una foto con las diferencias; un día cerrado bloquea sus movimientos (409) hasta reabrirlo.
 - `servidor/web/index.html` — página web (HTML, CSS y JS en un archivo) que `servidor.py` sirve en `/` y usa la misma API.
 - `cliente/caja.js` — CLI en Node.js que llama a la API con `fetch`; `cliente/api.js` tiene `pedir`, el manejo de errores y los respaldos.
@@ -16,7 +17,7 @@ Control de ingresos y gastos de un consultorio, en soles, pagados en efectivo o 
 | Tarea | Comando |
 |---|---|
 | Levantar servidor | `python servidor/servidor.py` (puerto 8001, para convivir con ejemplo1 en el 8000) |
-| Usar el cliente | `node cliente/caja.js registrar ingreso\|gasto <monto> <categoria> efectivo\|yape ["..."] [--fecha AAAA-MM-DD]` · `listar [AAAA-MM]` · `resumen [AAAA-MM]` · `editar <id> campo=valor...` · `eliminar <id>` · `cierre [AAAA-MM-DD]` · `cerrar <efectivo_contado> <yape_segun_app> ["nota"] [--fecha AAAA-MM-DD]` · `reabrir <AAAA-MM-DD>` · `cierres [AAAA-MM]` · `respaldar [carpeta]` |
+| Usar el cliente | `node cliente/caja.js registrar ingreso\|gasto <monto> <categoria> efectivo\|yape ["..."] [--fecha AAAA-MM-DD]` · `listar [AAAA-MM]` · `resumen [AAAA-MM]` · `editar <id> campo=valor...` · `eliminar <id>` · `cierre [AAAA-MM-DD]` · `cerrar <efectivo_contado> <yape_segun_app> ["nota"] [--fecha AAAA-MM-DD]` · `reabrir <AAAA-MM-DD>` · `cierres [AAAA-MM]` · `fijos [AAAA-MM]` · `fijos agregar "nombre" <monto> <categoria> <medio> [--dia N]` · `fijos pagar <id> [--fecha] [--medio]` · `fijos editar <id> campo=valor...` · `fijos eliminar <id>` · `respaldar [carpeta]` |
 | Pruebas Python | `cd servidor && python -m unittest -v` |
 | Pruebas Node | `cd cliente && npm test` (levantan el servidor real: necesitan `python`) |
 

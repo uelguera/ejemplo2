@@ -49,16 +49,33 @@ Al final del día cuentas el efectivo y miras en la app de Yape cuánto recibist
    ```
 4. **Historial:** `node cliente/caja.js cierres` (mes actual) o `cierres 2026-09`.
 
+## Gastos fijos
+
+Gastos que se pagan una vez al mes (alquiler, luz, sueldos…). Los registras una sola vez y cada mes ves cuáles están **pendientes** y cuáles **pagados**. Al pagar uno, se registra el gasto con la fecha y el medio reales.
+
+- **En la página:** sección «Gastos fijos de <mes>». «Administrar» para agregarlos o editarlos; «Pagar» en cada pendiente.
+- **En la terminal:**
+  ```bash
+  node cliente/caja.js fijos agregar "Alquiler" 1200 alquiler efectivo --dia 5   # --dia: vencimiento (opcional)
+  node cliente/caja.js fijos                      # pendientes y pagados del mes (o: fijos 2026-09)
+  node cliente/caja.js fijos pagar 1              # hoy, con el medio de siempre
+  node cliente/caja.js fijos pagar 1 --medio yape --fecha 2026-10-03
+  node cliente/caja.js fijos editar 1 monto=1300  # solo afecta los pagos futuros
+  node cliente/caja.js fijos eliminar 1           # los pagos ya hechos se conservan
+  ```
+
+Si eliminas el movimiento de un pago, ese gasto fijo vuelve a quedar pendiente.
+
 ## Copia de seguridad
 
-Los movimientos se guardan en `servidor/movimientos.json` y los cierres en `servidor/cierres.json` (ninguno se sube a git). Para copiarlos, con el servidor encendido:
+Los movimientos se guardan en `servidor/movimientos.json`, los cierres en `servidor/cierres.json` y los gastos fijos en `servidor/gastos_fijos.json` (ninguno se sube a git). Para copiarlos, con el servidor encendido:
 
 ```bash
-node cliente/caja.js respaldar                # en respaldos/caja-... .json y respaldos/cierres-... .json
+node cliente/caja.js respaldar                # en respaldos/: caja-..., cierres-... y gastos-fijos-... .json
 node cliente/caja.js respaldar E:\copias      # o en otra carpeta (USB, Google Drive...)
 ```
 
-Para restaurar una copia, cópiala encima del archivo correspondiente en `servidor/` (`caja-...` → `movimientos.json`, `cierres-...` → `cierres.json`).
+Para restaurar una copia, cópiala encima del archivo correspondiente en `servidor/` (`caja-...` → `movimientos.json`, `cierres-...` → `cierres.json`, `gastos-fijos-...` → `gastos_fijos.json`).
 
 ## Pruebas
 

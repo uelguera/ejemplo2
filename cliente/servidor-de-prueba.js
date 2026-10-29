@@ -19,9 +19,13 @@ export function levantarServidor() {
   const carpeta = mkdtempSync(join(tmpdir(), "caja-"));
   const archivoCaja = join(carpeta, "movimientos.json");
   const archivoCierres = join(carpeta, "cierres.json");
+  const archivoGastosFijos = join(carpeta, "gastos_fijos.json");
   return new Promise((resolver, rechazar) => {
     const proceso = spawn(PYTHON, ["-u", RUTA_SERVIDOR], {
-      env: { ...process.env, CAJA_PUERTO: "0", CAJA_ARCHIVO: archivoCaja, CIERRES_ARCHIVO: archivoCierres },
+      env: {
+        ...process.env, CAJA_PUERTO: "0", CAJA_ARCHIVO: archivoCaja,
+        CIERRES_ARCHIVO: archivoCierres, GASTOS_FIJOS_ARCHIVO: archivoGastosFijos,
+      },
     });
     const detener = () => {
       proceso.kill();
@@ -31,7 +35,7 @@ export function levantarServidor() {
     proceso.stdout.on("data", (trozo) => {
       salida += trozo;
       const encontrado = salida.match(/http:\/\/127\.0\.0\.1:\d+/);
-      if (encontrado) resolver({ url: encontrado[0], carpeta, archivoCaja, archivoCierres, detener });
+      if (encontrado) resolver({ url: encontrado[0], carpeta, archivoCaja, archivoCierres, archivoGastosFijos, detener });
     });
     proceso.on("error", rechazar);
     proceso.on("exit", (codigo) => rechazar(new Error(`El servidor terminó (código ${codigo}): ${salida}`)));

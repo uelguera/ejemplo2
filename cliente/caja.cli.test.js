@@ -20,6 +20,7 @@ before(async () => {
 beforeEach(() => {
   writeFileSync(servidor.archivoCaja, "[]"); // cada prueba empieza con la caja vacía
   writeFileSync(servidor.archivoCierres, "[]"); // y sin días cerrados
+  writeFileSync(servidor.archivoGastosFijos, "[]"); // ni gastos fijos
 });
 
 after(() => {
@@ -89,21 +90,69 @@ test("eliminar quita el movimiento", async () => {
   assert.equal((await cli("listar", "2026-10")).salida, "No hay movimientos en 2026-10.");
 });
 
-test("respaldar guarda todos los movimientos y los cierres, de cualquier mes", async () => {
+test("respaldar guarda los movimientos, los cierres y los gastos fijos, de cualquier mes", async () => {
   await cli("registrar", "ingreso", "150", "consulta", "yape", "--fecha", "2026-10-05");
   await cli("registrar", "gasto", "20", "servicios", "efectivo", "--fecha", "2026-09-30");
   await cli("cerrar", "0", "150", "--fecha", "2026-10-05");
+  await cli("fijos", "agregar", "Alquiler", "1200", "alquiler", "efectivo");
   const destino = join(servidor.carpeta, "respaldos-caja");
   const { codigo, salida } = await cli("respaldar", destino);
   assert.equal(codigo, 0);
-  const [lineaCaja, lineaCierres] = salida.split("\n");
-  assert.match(lineaCaja, /^Copia de seguridad guardada \(2 movimientos\): .*caja-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.json$/);
-  assert.match(lineaCierres, /^Copia de seguridad guardada \(1 cierre\): .*cierres-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.json$/);
+  const [lineaCaja, lineaCierres, lineaFijos] = salida.split("\n");
+  const fechaHora = String.raw`\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.json$`;
+  assert.match(lineaCaja, new RegExp(String.raw`^Copia de seguridad guardada \(2 movimientos\): .*caja-${fechaHora}`));
+  assert.match(lineaCierres, new RegExp(String.raw`^Copia de seguridad guardada \(1 cierre\): .*cierres-${fechaHora}`));
+  assert.match(lineaFijos, new RegExp(String.raw`^Copia de seguridad guardada \(1 gasto fijo\): .*gastos-fijos-${fechaHora}`));
   const archivos = readdirSync(destino).sort();
-  assert.equal(archivos.length, 2);
+  assert.equal(archivos.length, 3);
   const leer = (nombre) => JSON.parse(readFileSync(join(destino, nombre), "utf-8"));
   assert.deepEqual(leer(archivos[0]).map((m) => m.fecha), ["2026-09-30", "2026-10-05"]); // caja-...
   assert.deepEqual(leer(archivos[1]).map((c) => c.fecha), ["2026-10-05"]); // cierres-...
+  assert.deepEqual(leer(archivos[2]).map((g) => g.nombre), ["Alquiler"]); // gastos-fijos-...
+});
+
+test("gastos fijos: agregar, ver pendientes y pagar", async () => {
+  assert.match((await cli("fijos", "2026-10")).salida, /^No hay gastos fijos\. Agrega uno con:/);
+  assert.equal((await cli("fijos", "agregar", "Alquiler", "1200", "alquiler", "efectivo", "--dia", "5")).salida,
+    "Agregado: 1. Alquiler  S/ 1,200.00  alquiler · efectivo · vence el 5");
+  await cli("fijos", "agregar", "Luz del consultorio", "80.50", "servicios", "yape");
+  assert.equal((await cli("fijos", "2026-10")).salida, [
+    "1. Alquiler  S/ 1,200.00  alquiler · efectivo · vence el 5  → pendiente",
+    "2. Luz del consultorio  S/ 80.50  servicios · yape  → pendiente",
+    "Por pagar en 2026-10: S/ 1,280.50 (2 de 2)",
+  ].join("\n"));
+
+  assert.equal((await cli("fijos", "pagar", "1", "--fecha", "2026-10-03", "--medio", "yape")).salida,
+    "Pagado: 1. 2026-10-03  - S/ 1,200.00  alquiler · yape · Alquiler");
+  assert.equal((await cli("fijos", "2026-10")).salida, [
+    "1. Alquiler  S/ 1,200.00  alquiler · efectivo · vence el 5  → pagado el 2026-10-03",
+    "2. Luz del consultorio  S/ 80.50  servicios · yape  → pendiente",
+    "Por pagar en 2026-10: S/ 80.50 (1 de 2)",
+  ].join("\n"));
+  assert.equal((await cli("listar", "2026-10")).salida, "1. 2026-10-03  - S/ 1,200.00  alquiler · yape · Alquiler");
+
+  await cli("fijos", "pagar", "2", "--fecha", "2026-10-20");
+  assert.match((await cli("fijos", "2026-10")).salida, /\nTodo pagado en 2026-10\.$/);
+  assert.match((await cli("fijos", "2026-11")).salida, /\nPor pagar en 2026-11: S\/ 1,280\.50 \(2 de 2\)$/);
+});
+
+test("gastos fijos: editar, eliminar y errores", async () => {
+  await cli("fijos", "agregar", "Alquiler", "1200", "alquiler", "efectivo", "--dia", "5");
+  assert.equal((await cli("fijos", "editar", "1", "monto=1300", "dia=")).salida,
+    "Editado: 1. Alquiler  S/ 1,300.00  alquiler · efectivo");
+  await cli("fijos", "pagar", "1", "--fecha", "2026-10-03");
+  assert.equal((await cli("fijos", "pagar", "1", "--fecha", "2026-10-30")).error, "Error: Alquiler ya está pagado en 2026-10");
+  assert.equal((await cli("fijos", "agregar", "Luz", "del", "consultorio", "80", "servicios", "yape")).error,
+    'Error: No se entiende "servicios yape". Si el nombre tiene espacios, ponlo entre comillas: "Luz del consultorio"');
+  assert.equal((await cli("fijos", "agregar", "Luz", "80", "consulta", "yape")).error,
+    "Error: La categoría de un gasto debe ser una de: alquiler, insumos, servicios, sueldos, otro");
+  assert.equal((await cli("fijos", "agregar", "Luz", "80", "servicios", "yape", "--dia")).error,
+    "Error: Falta el valor después de --dia (un número del 1 al 31)");
+  assert.equal((await cli("fijos", "pagar", "9")).error, "Error: Gasto fijo no encontrado");
+
+  assert.equal((await cli("fijos", "eliminar", "1")).salida,
+    "Eliminado el gasto fijo 1. Los pagos ya registrados se conservan.");
+  assert.equal((await cli("listar", "2026-10")).salida, "1. 2026-10-03  - S/ 1,300.00  alquiler · efectivo · Alquiler");
 });
 
 // El 2026-10-05: efectivo +80 −35.50 (esperado S/ 44.50) y Yape +150.
@@ -176,7 +225,7 @@ test("los errores del servidor se muestran y salen con código 1", async () => {
   assert.equal((await cli("registrar", "gasto", "10", "insumos", "tarjeta")).error,
     "Error: El campo 'medio' debe ser uno de: efectivo, yape");
   assert.equal((await cli("registrar", "gasto", "10", "insumos", "yape", "--fecha")).error,
-    "Error: Falta la fecha después de --fecha (AAAA-MM-DD)");
+    "Error: Falta el valor después de --fecha (AAAA-MM-DD)");
   assert.equal((await cli("listar", "octubre")).error,
     "Error: El filtro 'mes' debe tener el formato AAAA-MM, por ejemplo 2026-10");
   assert.equal((await cli("eliminar", "99")).error, "Error: Movimiento no encontrado");

@@ -3,4 +3,5 @@ __pycache__/
 node_modules/
 servidor/movimientos.json
 servidor/cierres.json
+servidor/gastos_fijos.json
 respaldos/

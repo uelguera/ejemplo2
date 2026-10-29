@@ -18,7 +18,15 @@
 //   node caja.js reabrir 2026-10-28       (para corregir movimientos de un día cerrado)
 //   node caja.js cierres                  (historial del mes; o: cierres 2026-09)
 //
-//   node caja.js respaldar            (copia en respaldos/ del proyecto)
+// Gastos fijos (se pagan una vez al mes; "pagar" registra el gasto):
+//   node caja.js fijos                    (pendientes y pagados del mes; o: fijos 2026-09)
+//   node caja.js fijos agregar "Alquiler" 1200 alquiler efectivo --dia 5   (dia = vencimiento, opcional)
+//   node caja.js fijos pagar 1            (hoy, con el medio de siempre)
+//   node caja.js fijos pagar 1 --medio yape --fecha 2026-10-03
+//   node caja.js fijos editar 1 monto=1300
+//   node caja.js fijos eliminar 1         (los pagos ya hechos se conservan)
+//
+//   node caja.js respaldar          (copia en respaldos/ del proyecto)
 //   node caja.js respaldar E:\copias      (o en la carpeta indicada)
 //
 // Categorías de ingreso: consulta, procedimiento, certificado, otro
@@ -76,14 +84,34 @@ export function leerCambios(pares) {
   return cambios;
 }
 
-// Saca "--fecha AAAA-MM-DD" de los argumentos (los modifica) y devuelve la fecha, o undefined si no está.
-export function sacarFecha(args) {
-  const posicion = args.indexOf("--fecha");
+const EJEMPLOS_OPCIONES = { "--fecha": "AAAA-MM-DD", "--dia": "un número del 1 al 31", "--medio": "efectivo o yape" };
+
+// Saca "--opcion valor" de los argumentos (los modifica) y devuelve el valor, o undefined si no está.
+export function sacarOpcion(args, opcion) {
+  const posicion = args.indexOf(opcion);
   if (posicion === -1) return undefined;
-  const fecha = args[posicion + 1];
-  if (!fecha) throw new Error("Falta la fecha después de --fecha (AAAA-MM-DD)");
+  const valor = args[posicion + 1];
+  if (!valor) throw new Error(`Falta el valor después de ${opcion} (${EJEMPLOS_OPCIONES[opcion]})`);
   args.splice(posicion, 2);
-  return fecha;
+  return valor;
+}
+
+// "1. Alquiler  S/ 1,200.00  alquiler · efectivo · vence el 5  → pendiente"
+// (la flecha solo aparece cuando viene el estado del mes)
+export function formatearGastoFijo(g) {
+  const detalle = [g.categoria, g.medio, g.dia ? `vence el ${g.dia}` : ""].filter(Boolean).join(" · ");
+  const estado = g.pagado === undefined ? "" : g.pagado ? `  → pagado el ${g.movimiento.fecha}` : "  → pendiente";
+  return `${g.id}. ${g.nombre}  ${formatearSoles(g.monto)}  ${detalle}${estado}`;
+}
+
+// Lista de gastos fijos del mes con lo que falta pagar al final.
+export function formatearGastosFijosDelMes(gastos, mes) {
+  const pendientes = gastos.filter((g) => !g.pagado);
+  const total = pendientes.reduce((suma, g) => suma + Math.round(g.monto * 100), 0) / 100; // en céntimos: sin errores de redondeo
+  const pie = pendientes.length
+    ? `Por pagar en ${mes}: ${formatearSoles(total)} (${pendientes.length} de ${gastos.length})`
+    : `Todo pagado en ${mes}.`;
+  return [...gastos.map(formatearGastoFijo), pie].join("\n");
 }
 
 // Diferencia = lo contado (o lo que dice la app) − lo registrado.
@@ -120,7 +148,7 @@ export function formatearLineaCierre(c) {
 
 const comandos = {
   async registrar(tipo, monto, categoria, medio, ...resto) {
-    const fecha = sacarFecha(resto);
+    const fecha = sacarOpcion(resto, "--fecha");
     const movimiento = await pedir("POST", "/movimientos", {
       tipo, monto, categoria, medio, fecha, descripcion: resto.join(" "),
     });
@@ -146,7 +174,7 @@ const comandos = {
     console.log(formatearCierre(await pedir("GET", ruta)));
   },
   async cerrar(efectivoContado, yapeApp, ...resto) {
-    const fecha = sacarFecha(resto);
+    const fecha = sacarOpcion(resto, "--fecha");
     const cierre = await pedir("POST", "/cierres", {
       fecha, efectivo_contado: efectivoContado, yape_app: yapeApp, nota: resto.join(" "),
     });
@@ -161,18 +189,56 @@ const comandos = {
     const cierres = await pedir("GET", `/cierres?mes=${encodeURIComponent(mes)}`);
     console.log(cierres.length ? cierres.map(formatearLineaCierre).join("\n") : `No hay cierres en ${mes}.`);
   },
+  async fijos(...args) {
+    const [subcomando, ...resto] = args;
+    if (Object.hasOwn(comandosFijos, subcomando)) return comandosFijos[subcomando](...resto);
+    const mes = subcomando ?? mesActual();
+    const gastos = await pedir("GET", `/gastos-fijos?mes=${encodeURIComponent(mes)}`);
+    console.log(gastos.length
+      ? formatearGastosFijosDelMes(gastos, mes)
+      : 'No hay gastos fijos. Agrega uno con: node caja.js fijos agregar "Alquiler" 1200 alquiler efectivo --dia 5');
+  },
   async respaldar(carpeta) {
-    const movimientos = await pedir("GET", "/movimientos?mes=todos");
-    const cierres = await pedir("GET", "/cierres?mes=todos");
-    const rutaMovimientos = await guardarRespaldo("caja", movimientos, carpeta);
-    const rutaCierres = await guardarRespaldo("cierres", cierres, carpeta);
-    const cantidad = (n, singular, plural) => `${n} ${n === 1 ? singular : plural}`;
-    console.log(`Copia de seguridad guardada (${cantidad(movimientos.length, "movimiento", "movimientos")}): ${rutaMovimientos}`);
-    console.log(`Copia de seguridad guardada (${cantidad(cierres.length, "cierre", "cierres")}): ${rutaCierres}`);
+    const archivos = [
+      ["caja", "/movimientos?mes=todos", "movimiento", "movimientos"],
+      ["cierres", "/cierres?mes=todos", "cierre", "cierres"],
+      ["gastos-fijos", "/gastos-fijos?mes=todos", "gasto fijo", "gastos fijos"],
+    ];
+    for (const [prefijo, ruta, singular, plural] of archivos) {
+      const datos = await pedir("GET", ruta);
+      const destino = await guardarRespaldo(prefijo, datos, carpeta);
+      console.log(`Copia de seguridad guardada (${datos.length} ${datos.length === 1 ? singular : plural}): ${destino}`);
+    }
+  },
+};
+
+// Subcomandos de "fijos": node caja.js fijos <agregar|pagar|editar|eliminar> ...
+const comandosFijos = {
+  async agregar(nombre, monto, categoria, medio, ...resto) {
+    const dia = sacarOpcion(resto, "--dia");
+    if (resto.length) {
+      throw new Error(`No se entiende "${resto.join(" ")}". Si el nombre tiene espacios, ponlo entre comillas: "Luz del consultorio"`);
+    }
+    const plantilla = await pedir("POST", "/gastos-fijos", { nombre, monto, categoria, medio, dia });
+    console.log(`Agregado: ${formatearGastoFijo(plantilla)}`);
+  },
+  async pagar(id, ...resto) {
+    const fecha = sacarOpcion(resto, "--fecha");
+    const medio = sacarOpcion(resto, "--medio");
+    const movimiento = await pedir("POST", `/gastos-fijos/${id}/pagar`, { fecha, medio });
+    console.log(`Pagado: ${formatearMovimiento(movimiento)}`);
+  },
+  async editar(id, ...pares) {
+    const plantilla = await pedir("PATCH", `/gastos-fijos/${id}`, leerCambios(pares));
+    console.log(`Editado: ${formatearGastoFijo(plantilla)}`);
+  },
+  async eliminar(id) {
+    await pedir("DELETE", `/gastos-fijos/${id}`);
+    console.log(`Eliminado el gasto fijo ${id}. Los pagos ya registrados se conservan.`);
   },
 };
 
 // Solo se ejecuta si se llama directamente (no al importarlo desde las pruebas).
 if (import.meta.main) {
-  ejecutarComandos(comandos, "Uso: node caja.js <registrar ingreso|gasto <monto> <categoria> efectivo|yape [\"descripcion\"] [--fecha AAAA-MM-DD] | listar [AAAA-MM] | resumen [AAAA-MM] | editar <id> campo=valor... | eliminar <id> | cierre [AAAA-MM-DD] | cerrar <efectivo_contado> <yape_segun_app> [\"nota\"] [--fecha AAAA-MM-DD] | reabrir <AAAA-MM-DD> | cierres [AAAA-MM] | respaldar [carpeta]>");
+  ejecutarComandos(comandos, "Uso: node caja.js <registrar ingreso|gasto <monto> <categoria> efectivo|yape [\"descripcion\"] [--fecha AAAA-MM-DD] | listar [AAAA-MM] | resumen [AAAA-MM] | editar <id> campo=valor... | eliminar <id> | cierre [AAAA-MM-DD] | cerrar <efectivo_contado> <yape_segun_app> [\"nota\"] [--fecha AAAA-MM-DD] | reabrir <AAAA-MM-DD> | cierres [AAAA-MM] | fijos [AAAA-MM] | fijos agregar \"nombre\" <monto> <categoria> efectivo|yape [--dia N] | fijos pagar <id> [--fecha AAAA-MM-DD] [--medio efectivo|yape] | fijos editar <id> campo=valor... | fijos eliminar <id> | respaldar [carpeta]>");
 }

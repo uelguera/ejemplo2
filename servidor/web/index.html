@@ -54,6 +54,16 @@
     .falta { color: var(--peligro); }
     .descuadre { color: var(--aviso); }
     .candado { color: var(--suave); font-size: .85rem; white-space: nowrap; }
+    .seccion-cabecera { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .seccion-cabecera h2 { margin-bottom: 4px; }
+    button.enlace { border: 0; background: none; padding: 0; color: var(--acento); text-decoration: underline; }
+    .pie-seccion { color: var(--suave); font-size: .9rem; margin: 0 0 8px; }
+    #fijos { margin-bottom: 8px; }
+    #form-fijo { margin-bottom: 8px; }
+    .pagado { color: var(--exito); font-size: .9rem; white-space: nowrap; }
+    li.pagando { flex-wrap: wrap; }
+    li .pago { display: flex; gap: 6px; flex-basis: 100%; justify-content: flex-end; flex-wrap: wrap; }
+    li .pago input, li .pago select { padding: 4px 8px; }
     ul { list-style: none; margin: 0; padding: 0; background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 10px; }
     li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--borde); }
     li:first-child { border-top: 0; }
@@ -84,6 +94,29 @@
     </div>
     <p class="medios" id="medios"></p>
 
+    <div class="seccion-cabecera">
+      <h2 id="titulo-fijos">Gastos fijos</h2>
+      <button id="administrar" type="button" class="enlace">Administrar</button>
+    </div>
+    <p id="pendiente-fijos" class="pie-seccion"></p>
+    <ul id="fijos"></ul>
+    <form id="form-fijo" hidden>
+      <input id="fijo-nombre" type="text" placeholder="Nombre, p. ej. Alquiler" aria-label="Nombre del gasto fijo" required>
+      <input id="fijo-monto" type="number" min="0.01" step="0.01" placeholder="Monto (S/)" aria-label="Monto en soles" required>
+      <select id="fijo-categoria" aria-label="Categoría"></select>
+      <select id="fijo-medio" aria-label="Medio de pago habitual">
+        <option value="efectivo">Efectivo</option>
+        <option value="yape">Yape</option>
+      </select>
+      <input id="fijo-dia" class="ancho" type="number" min="1" max="31" step="1" placeholder="Día de vencimiento (opcional), p. ej. 5" aria-label="Día de vencimiento">
+      <div class="ancho botones">
+        <button id="fijo-enviar" class="principal">Agregar gasto fijo</button>
+        <button id="fijo-cancelar" type="button" hidden>Cancelar</button>
+      </div>
+    </form>
+    <p id="error-fijos" class="error" role="alert"></p>
+
+    <h2>Registrar movimiento</h2>
     <form id="formulario">
       <select id="tipo" aria-label="Tipo">
         <option value="ingreso">Ingreso</option>
@@ -133,6 +166,10 @@
     const lista = $("lista");
     const error = $("error");
     const errorCierre = $("error-cierre");
+    const errorFijos = $("error-fijos");
+    const MEDIOS = ["efectivo", "yape"];
+    let administrando = false; // true: la lista de gastos fijos muestra Editar/Eliminar en vez de Pagar
+    let editandoFijo = null; // id de la plantilla cargada en el formulario de gastos fijos
     const hoy = () => new Date().toLocaleDateString("en-CA"); // AAAA-MM-DD en hora local
     const mayuscula = (texto) => texto.charAt(0).toUpperCase() + texto.slice(1);
     let editando = null; // id del movimiento cargado en el formulario, o null si se registra uno nuevo
@@ -159,20 +196,22 @@
 
     // Ejecuta un cambio, muestra el error (en el párrafo indicado) si lo hay y siempre vuelve a pintar todo.
     async function accion(cambio, destino = error) {
-      error.textContent = errorCierre.textContent = "";
+      error.textContent = errorCierre.textContent = errorFijos.textContent = "";
       try { await cambio(); } catch (e) { destino.textContent = e.message; }
       try { await cargar(); } catch (e) { destino.textContent = e.message; }
     }
 
     async function cargar() {
       const mes = $("mes").value;
-      const [movimientos, resumen, cierres] = await Promise.all([
+      const [movimientos, resumen, cierres, gastosFijos] = await Promise.all([
         pedir("GET", `/movimientos?mes=${mes}`),
         pedir("GET", `/resumen?mes=${mes}`),
         pedir("GET", `/cierres?mes=${mes}`),
+        pedir("GET", `/gastos-fijos?mes=${mes}`),
         cargarCierre(),
       ]);
       diasCerrados = new Set(cierres.map((c) => c.fecha));
+      mostrarGastosFijos(gastosFijos, mes);
       $("ingresos").textContent = soles.format(resumen.ingresos);
       $("gastos").textContent = soles.format(resumen.gastos);
       $("saldo").textContent = soles.format(resumen.saldo);
@@ -271,6 +310,176 @@
       $("cancelar").hidden = true;
       for (const fila of lista.children) fila.classList.remove("editando");
     }
+
+    // ---- Gastos fijos ----
+
+    function nombreDelMes(mes) {
+      const [anio, numero] = mes.split("-").map(Number);
+      return new Date(anio, numero - 1, 1).toLocaleDateString("es-PE", { month: "long" });
+    }
+
+    function ultimoDia(mes) {
+      const [anio, numero] = mes.split("-").map(Number);
+      return new Date(anio, numero, 0).getDate(); // día 0 del mes siguiente = último del mes
+    }
+
+    // Fecha de vencimiento en ese mes (el día 31 en un mes de 30 días pasa al 30; sin día, el último).
+    function fechaDeVencimiento(g, mes) {
+      const dia = Math.min(g.dia ?? ultimoDia(mes), ultimoDia(mes));
+      return `${mes}-${String(dia).padStart(2, "0")}`;
+    }
+
+    function boton(texto, alPulsar, clase = "") {
+      const elemento = document.createElement("button");
+      elemento.type = "button";
+      elemento.textContent = texto;
+      if (clase) elemento.className = clase;
+      elemento.addEventListener("click", alPulsar);
+      return elemento;
+    }
+
+    function mostrarGastosFijos(gastos, mes) {
+      $("titulo-fijos").textContent = `Gastos fijos de ${nombreDelMes(mes)}`;
+      const pendientes = gastos.filter((g) => !g.pagado);
+      const total = pendientes.reduce((suma, g) => suma + Math.round(g.monto * 100), 0) / 100; // en céntimos
+      $("pendiente-fijos").textContent = !gastos.length ? ""
+        : pendientes.length ? `Por pagar: ${soles.format(total)} (${pendientes.length} de ${gastos.length})`
+        : "Todo pagado ✓";
+      if (gastos.length) {
+        $("fijos").replaceChildren(...gastos.map((g) => filaGastoFijo(g, mes)));
+      } else {
+        const vacio = document.createElement("li");
+        vacio.className = "vacio";
+        vacio.textContent = "No tienes gastos fijos. Pulsa «Administrar» para agregar el alquiler, la luz…";
+        $("fijos").replaceChildren(vacio);
+      }
+    }
+
+    function filaGastoFijo(g, mes) {
+      const fila = document.createElement("li");
+
+      const detalle = document.createElement("span");
+      detalle.className = "detalle";
+      detalle.textContent = g.nombre;
+      const extra = document.createElement("small");
+      const vencido = !g.pagado && g.dia !== null && fechaDeVencimiento(g, mes) < hoy();
+      extra.textContent = [mayuscula(g.categoria), mayuscula(g.medio), g.dia ? `vence el ${g.dia}` : "", vencido ? "vencido" : ""]
+        .filter(Boolean).join(" · ");
+      if (vencido) extra.classList.add("descuadre");
+      detalle.append(extra);
+
+      const monto = document.createElement("span");
+      monto.className = "monto gasto";
+      monto.textContent = soles.format(g.monto);
+      fila.append(detalle, monto);
+
+      if (administrando) {
+        fila.classList.toggle("editando", g.id === editandoFijo);
+        fila.append(
+          boton("Editar", () => empezarEdicionFijo(g, fila)),
+          boton("Eliminar", () => accion(async () => {
+            await pedir("DELETE", `/gastos-fijos/${g.id}`);
+            if (g.id === editandoFijo) terminarEdicionFijo();
+          }, errorFijos), "borrar"),
+        );
+      } else if (g.pagado) {
+        const pagado = document.createElement("span");
+        pagado.className = "pagado";
+        const [, mesNum, dia] = g.movimiento.fecha.split("-");
+        pagado.textContent = `✓ Pagado el ${dia}/${mesNum}`;
+        fila.append(pagado);
+      } else {
+        const pagar = boton("Pagar", () => mostrarPago(fila, pagar, g, mes), "principal");
+        fila.append(pagar);
+      }
+      return fila;
+    }
+
+    // Cambia el botón Pagar por la fecha y el medio del pago, con Confirmar y Cancelar.
+    function mostrarPago(fila, pagar, g, mes) {
+      const fecha = document.createElement("input");
+      fecha.type = "date";
+      fecha.required = true;
+      fecha.value = mes === hoy().slice(0, 7) ? hoy() : fechaDeVencimiento(g, mes);
+      fecha.setAttribute("aria-label", `Fecha de pago de ${g.nombre}`);
+
+      const medio = document.createElement("select");
+      medio.replaceChildren(...MEDIOS.map((m) => new Option(mayuscula(m), m)));
+      medio.value = g.medio;
+      medio.setAttribute("aria-label", `Medio de pago de ${g.nombre}`);
+
+      const pago = document.createElement("span");
+      pago.className = "pago";
+      pago.append(
+        fecha,
+        medio,
+        boton("Confirmar pago", () => accion(() =>
+          pedir("POST", `/gastos-fijos/${g.id}/pagar`, { fecha: fecha.value, medio: medio.value }), errorFijos), "principal"),
+        boton("Cancelar", () => accion(() => {}, errorFijos)),
+      );
+      fila.classList.add("pagando");
+      pagar.replaceWith(pago);
+      fecha.focus();
+    }
+
+    function llenarCategoriasFijo() {
+      $("fijo-categoria").replaceChildren(...CATEGORIAS.gasto.map((c) => new Option(mayuscula(c), c)));
+    }
+
+    function empezarEdicionFijo(g, fila) {
+      editandoFijo = g.id;
+      $("fijo-nombre").value = g.nombre;
+      $("fijo-monto").value = g.monto;
+      $("fijo-categoria").value = g.categoria;
+      $("fijo-medio").value = g.medio;
+      $("fijo-dia").value = g.dia ?? "";
+      $("fijo-enviar").textContent = "Guardar cambios";
+      $("fijo-cancelar").hidden = false;
+      errorFijos.textContent = "";
+      for (const otra of $("fijos").children) otra.classList.toggle("editando", otra === fila);
+      $("fijo-nombre").focus();
+    }
+
+    function terminarEdicionFijo() {
+      editandoFijo = null;
+      $("form-fijo").reset();
+      llenarCategoriasFijo();
+      $("fijo-enviar").textContent = "Agregar gasto fijo";
+      $("fijo-cancelar").hidden = true;
+      for (const fila of $("fijos").children) fila.classList.remove("editando");
+    }
+
+    $("administrar").addEventListener("click", () => {
+      administrando = !administrando;
+      $("administrar").textContent = administrando ? "Listo" : "Administrar";
+      $("form-fijo").hidden = !administrando;
+      terminarEdicionFijo();
+      accion(() => {}, errorFijos);
+      if (administrando) $("fijo-nombre").focus();
+    });
+    $("fijo-cancelar").addEventListener("click", () => { terminarEdicionFijo(); errorFijos.textContent = ""; });
+
+    $("form-fijo").addEventListener("submit", (e) => {
+      e.preventDefault();
+      accion(async () => {
+        const datos = {
+          nombre: $("fijo-nombre").value,
+          monto: $("fijo-monto").value,
+          categoria: $("fijo-categoria").value,
+          medio: $("fijo-medio").value,
+          dia: $("fijo-dia").value,
+        };
+        if (editandoFijo === null) {
+          await pedir("POST", "/gastos-fijos", datos);
+        } else {
+          await pedir("PATCH", `/gastos-fijos/${editandoFijo}`, datos);
+        }
+        terminarEdicionFijo();
+        $("fijo-nombre").focus();
+      }, errorFijos);
+    });
+
+    // ---- Cierre del día ----
 
     // Diferencia = lo contado (o lo que dice la app) − lo registrado. Mismo texto que el CLI.
     function describirDiferencia(diferencia, medio) {
@@ -372,6 +581,7 @@
     $("mes").value = hoy().slice(0, 7);
     $("dia").value = $("dia").max = hoy(); // no se puede cerrar un día que aún no llega
     llenarCategorias();
+    llenarCategoriasFijo();
     accion(() => {});
   </script>
 </body>

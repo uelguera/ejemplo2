@@ -20,10 +20,22 @@ Endpoints de cierre de caja (cada día empieza en S/ 0 de efectivo):
     GET    /cierres           -> cierres de un mes (?mes=AAAA-MM; por defecto el actual)
 Un día cerrado queda bloqueado: sus movimientos no se pueden registrar, editar ni eliminar (409).
 
+Endpoints de gastos fijos (plantillas que se pagan una vez al mes):
+    GET    /gastos-fijos               -> plantillas con su estado en un mes ("pagado" y su "movimiento")
+                                          (?mes=AAAA-MM; por defecto el actual; ?mes=todos = solo las plantillas)
+    POST   /gastos-fijos               -> crea una plantilla (cuerpo: {"nombre": "Alquiler", "categoria": "alquiler",
+                                          "monto": 1200, "medio": "efectivo"|"yape", "dia": 5 (opcional, vencimiento)})
+    PATCH  /gastos-fijos/<id>          -> cambia campos de la plantilla (no toca lo ya pagado)
+    DELETE /gastos-fijos/<id>          -> elimina la plantilla (los pagos hechos se quedan)
+    POST   /gastos-fijos/<id>/pagar    -> registra el pago como movimiento con "gasto_fijo": <id>
+                                          (cuerpo opcional: {"fecha": "AAAA-MM-DD" (hoy), "medio": "yape"})
+Un gasto fijo está pagado en un mes si hay un movimiento de ese mes con su "gasto_fijo".
+
 Variables de entorno opcionales:
-    CAJA_PUERTO      -> puerto (por defecto 8001; 0 = uno libre cualquiera)
-    CAJA_ARCHIVO     -> archivo JSON de movimientos (por defecto servidor/movimientos.json)
-    CIERRES_ARCHIVO  -> archivo JSON de cierres (por defecto servidor/cierres.json)
+    CAJA_PUERTO           -> puerto (por defecto 8001; 0 = uno libre cualquiera)
+    CAJA_ARCHIVO          -> archivo JSON de movimientos (por defecto servidor/movimientos.json)
+    CIERRES_ARCHIVO       -> archivo JSON de cierres (por defecto servidor/cierres.json)
+    GASTOS_FIJOS_ARCHIVO  -> archivo JSON de gastos fijos (por defecto servidor/gastos_fijos.json)
 """
 
 import json
@@ -38,6 +50,7 @@ from urllib.parse import parse_qs, urlsplit
 PUERTO = int(os.environ.get("CAJA_PUERTO", 8001))
 ARCHIVO_DATOS = Path(os.environ.get("CAJA_ARCHIVO", Path(__file__).parent / "movimientos.json"))
 ARCHIVO_CIERRES = Path(os.environ.get("CIERRES_ARCHIVO", Path(__file__).parent / "cierres.json"))
+ARCHIVO_GASTOS_FIJOS = Path(os.environ.get("GASTOS_FIJOS_ARCHIVO", Path(__file__).parent / "gastos_fijos.json"))
 PAGINA_WEB = Path(__file__).parent / "web" / "index.html"
 
 # Cambia estas listas para usar otras categorías o medios de pago
@@ -49,6 +62,7 @@ CATEGORIAS = {
 MEDIOS = ("efectivo", "yape")
 MONTO_MAXIMO = Decimal("1000000")
 CAMPOS = ("tipo", "monto", "categoria", "medio", "fecha", "descripcion")
+CAMPOS_GASTO_FIJO = ("nombre", "categoria", "monto", "medio", "dia")
 
 
 def validar_fecha(texto: str, patron: str, relleno: str) -> bool:
@@ -117,6 +131,34 @@ def validar_movimiento(cuerpo: dict) -> dict:
     }
 
 
+def validar_gasto_fijo(cuerpo: dict) -> dict:
+    """Devuelve la plantilla limpia (sin id) o lanza ValueError con un mensaje para el usuario."""
+    nombre = str(cuerpo.get("nombre") or "").strip()
+    if not nombre:
+        raise ValueError("El campo 'nombre' es obligatorio, por ejemplo Alquiler")
+
+    categoria = str(cuerpo.get("categoria", "")).strip().lower()
+    if categoria not in CATEGORIAS["gasto"]:
+        raise ValueError(f"La categoría de un gasto debe ser una de: {', '.join(CATEGORIAS['gasto'])}")
+
+    monto = leer_soles(cuerpo.get("monto"), "monto")
+
+    medio = str(cuerpo.get("medio", "")).strip().lower()
+    if medio not in MEDIOS:
+        raise ValueError(f"El campo 'medio' debe ser uno de: {', '.join(MEDIOS)}")
+
+    dia = cuerpo.get("dia")
+    if dia in (None, ""):
+        dia = None
+    else:
+        texto = str(dia).strip()
+        if isinstance(dia, bool) or not texto.isdigit() or not 1 <= int(texto) <= 31:
+            raise ValueError("El campo 'dia' (vencimiento) debe ser un número del 1 al 31")
+        dia = int(texto)
+
+    return {"nombre": nombre, "categoria": categoria, "monto": float(monto), "medio": medio, "dia": dia}
+
+
 def calcular_cierre(fecha: str, movimientos: list[dict]) -> dict:
     """Vista previa del cierre de un día: el efectivo esperado (el día empieza en 0) y lo recibido por Yape."""
     suma = {(medio, tipo): Decimal(0) for medio in MEDIOS for tipo in CATEGORIAS}
@@ -148,37 +190,41 @@ class ArchivoJson:
         self.ruta.write_text(json.dumps(registros, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-class Caja(ArchivoJson):
-    """Guarda los ingresos y gastos del consultorio en un archivo JSON."""
+class ConIds(ArchivoJson):
+    """Registros identificados por un "id" numérico que se asigna al crearlos."""
 
-    def registrar(self, datos: dict) -> dict:
-        movimientos = self.leer()
-        nuevo_id = max((m["id"] for m in movimientos), default=0) + 1
-        movimiento = {"id": nuevo_id, **datos}
-        movimientos.append(movimiento)
-        self.escribir(movimientos)
-        return movimiento
+    def crear(self, datos: dict) -> dict:
+        registros = self.leer()
+        nuevo_id = max((r["id"] for r in registros), default=0) + 1
+        registro = {"id": nuevo_id, **datos}
+        registros.append(registro)
+        self.escribir(registros)
+        return registro
 
-    def buscar(self, id_movimiento: int) -> dict | None:
-        return next((m for m in self.leer() if m["id"] == id_movimiento), None)
+    def buscar(self, id_registro: int) -> dict | None:
+        return next((r for r in self.leer() if r["id"] == id_registro), None)
 
-    def actualizar(self, id_movimiento: int, datos: dict) -> dict | None:
-        """Reemplaza los datos del movimiento (ya validados con validar_movimiento)."""
-        movimientos = self.leer()
-        for posicion, movimiento in enumerate(movimientos):
-            if movimiento["id"] == id_movimiento:
-                movimientos[posicion] = {"id": id_movimiento, **datos}
-                self.escribir(movimientos)
-                return movimientos[posicion]
+    def actualizar(self, id_registro: int, datos: dict) -> dict | None:
+        """Reemplaza los datos del registro (ya validados)."""
+        registros = self.leer()
+        for posicion, registro in enumerate(registros):
+            if registro["id"] == id_registro:
+                registros[posicion] = {"id": id_registro, **datos}
+                self.escribir(registros)
+                return registros[posicion]
         return None
 
-    def eliminar(self, id_movimiento: int) -> bool:
-        movimientos = self.leer()
-        restantes = [m for m in movimientos if m["id"] != id_movimiento]
-        if len(restantes) == len(movimientos):
+    def eliminar(self, id_registro: int) -> bool:
+        registros = self.leer()
+        restantes = [r for r in registros if r["id"] != id_registro]
+        if len(restantes) == len(registros):
             return False
         self.escribir(restantes)
         return True
+
+
+class Caja(ConIds):
+    """Guarda los ingresos y gastos del consultorio en un archivo JSON."""
 
     def del_mes(self, mes: str | None) -> list[dict]:
         """Movimientos del mes 'AAAA-MM' (o todos si mes es None), por fecha y luego por orden de registro."""
@@ -257,8 +303,22 @@ class Cierres(ArchivoJson):
                       key=lambda c: c["fecha"])
 
 
-def crear_manejador(caja: Caja, cierres: Cierres):
-    """Devuelve una clase de manejador HTTP que usa la caja y los cierres dados."""
+class GastosFijos(ConIds):
+    """Guarda las plantillas de gastos fijos (alquiler, luz...) en un archivo JSON."""
+
+    def estado_del_mes(self, movimientos_del_mes: list[dict]) -> list[dict]:
+        """Cada plantilla con "pagado" y el "movimiento" que la paga ese mes; primero las que vencen antes."""
+        pagos = {m["gasto_fijo"]: m for m in movimientos_del_mes if "gasto_fijo" in m}
+        plantillas = sorted(self.leer(), key=lambda g: (g["dia"] is None, g["dia"] or 0, g["id"]))
+        return [
+            {**g, "pagado": g["id"] in pagos,
+             "movimiento": {c: pagos[g["id"]][c] for c in ("id", "fecha", "medio")} if g["id"] in pagos else None}
+            for g in plantillas
+        ]
+
+
+def crear_manejador(caja: Caja, cierres: Cierres, gastos_fijos: GastosFijos):
+    """Devuelve una clase de manejador HTTP que usa la caja, los cierres y los gastos fijos dados."""
 
     class Manejador(BaseHTTPRequestHandler):
         def _enviar(self, estado: int, datos: bytes, tipo: str) -> None:
@@ -282,8 +342,8 @@ def crear_manejador(caja: Caja, cierres: Cierres):
                 return partes[1]
             return None
 
-        def _id_de_ruta(self) -> int | None:
-            valor = self._parte_de_ruta("movimientos")
+        def _id_de_ruta(self, recurso: str = "movimientos") -> int | None:
+            valor = self._parte_de_ruta(recurso)
             return int(valor) if valor is not None and valor.isdigit() else None
 
         def _leer_cuerpo(self) -> dict | None:
@@ -305,36 +365,88 @@ def crear_manejador(caja: Caja, cierres: Cierres):
                 if not es_dia(fecha):
                     return self._responder(400, {"error": "El filtro 'fecha' debe tener el formato AAAA-MM-DD, por ejemplo 2026-10-29"})
                 return self._responder(200, cierres.buscar(fecha) or calcular_cierre(fecha, caja.del_dia(fecha)))
-            if url.path not in ("/movimientos", "/resumen", "/cierres"):
+            if url.path not in ("/movimientos", "/resumen", "/cierres", "/gastos-fijos"):
                 return self._responder(404, {"error": "Ruta no encontrada"})
             mes = consulta.get("mes", [date.today().strftime("%Y-%m")])[0]
             if url.path == "/movimientos" and mes == "todos":
                 return self._responder(200, caja.del_mes(None))
             if url.path == "/cierres" and mes == "todos":
                 return self._responder(200, cierres.del_mes(None))
+            if url.path == "/gastos-fijos" and mes == "todos":
+                return self._responder(200, gastos_fijos.leer())
             if not es_mes(mes):
                 return self._responder(400, {"error": "El filtro 'mes' debe tener el formato AAAA-MM, por ejemplo 2026-10"})
             if url.path == "/movimientos":
                 return self._responder(200, caja.del_mes(mes))
+            if url.path == "/gastos-fijos":
+                return self._responder(200, gastos_fijos.estado_del_mes(caja.del_mes(mes)))
             if url.path == "/cierres":
                 return self._responder(200, cierres.del_mes(mes))
             self._responder(200, caja.resumen(mes))
 
         def do_POST(self):
-            if self.path not in ("/movimientos", "/cierres"):
+            partes = self.path.strip("/").split("/")
+            pagar = len(partes) == 3 and partes[0] == "gastos-fijos" and partes[1].isdigit() and partes[2] == "pagar"
+            if self.path not in ("/movimientos", "/cierres", "/gastos-fijos") and not pagar:
                 return self._responder(404, {"error": "Ruta no encontrada"})
             cuerpo = self._leer_cuerpo()
             if cuerpo is None:
                 return self._responder(400, {"error": "JSON inválido"})
+            if pagar:
+                return self._pagar_gasto_fijo(int(partes[1]), cuerpo)
             if self.path == "/cierres":
                 return self._cerrar_dia(cuerpo)
+            if self.path == "/gastos-fijos":
+                try:
+                    return self._responder(201, gastos_fijos.crear(validar_gasto_fijo(cuerpo)))
+                except ValueError as e:
+                    return self._responder(400, {"error": str(e)})
             try:
                 datos = validar_movimiento(cuerpo)
             except ValueError as e:
                 return self._responder(400, {"error": str(e)})
             if cierres.esta_cerrado(datos["fecha"]):
                 return self._dia_cerrado(datos["fecha"])
-            self._responder(201, caja.registrar(datos))
+            self._responder(201, caja.crear(datos))
+
+        def _pagar_gasto_fijo(self, id_gasto: int, cuerpo: dict) -> None:
+            gasto = gastos_fijos.buscar(id_gasto)
+            if gasto is None:
+                return self._responder(404, {"error": "Gasto fijo no encontrado"})
+            try:
+                datos = validar_movimiento({
+                    "tipo": "gasto", "monto": gasto["monto"], "categoria": gasto["categoria"],
+                    "medio": cuerpo.get("medio") or gasto["medio"], "fecha": cuerpo.get("fecha"),
+                    "descripcion": gasto["nombre"],
+                })
+            except ValueError as e:
+                return self._responder(400, {"error": str(e)})
+            mes = datos["fecha"][:7]
+            if any(m.get("gasto_fijo") == id_gasto for m in caja.del_mes(mes)):
+                return self._responder(409, {"error": f"{gasto['nombre']} ya está pagado en {mes}"})
+            if cierres.esta_cerrado(datos["fecha"]):
+                return self._dia_cerrado(datos["fecha"])
+            self._responder(201, caja.crear({**datos, "gasto_fijo": id_gasto}))
+
+        def _editar_gasto_fijo(self) -> None:
+            id_gasto = self._id_de_ruta("gastos-fijos")
+            original = gastos_fijos.buscar(id_gasto) if id_gasto is not None else None
+            if original is None:
+                return self._responder(404, {"error": "Gasto fijo no encontrado"})
+            cuerpo = self._leer_cuerpo()
+            if cuerpo is None:
+                return self._responder(400, {"error": "JSON inválido"})
+            desconocidos = sorted(set(cuerpo) - set(CAMPOS_GASTO_FIJO))
+            if desconocidos:
+                return self._responder(400, {"error": f"No se puede cambiar: {', '.join(desconocidos)}. "
+                                                      f"Campos válidos: {', '.join(CAMPOS_GASTO_FIJO)}"})
+            if not cuerpo:
+                return self._responder(400, {"error": "Indica al menos un campo para cambiar"})
+            try:
+                datos = validar_gasto_fijo({**original, **cuerpo})
+            except ValueError as e:
+                return self._responder(400, {"error": str(e)})
+            self._responder(200, gastos_fijos.actualizar(id_gasto, datos))
 
         def _cerrar_dia(self, cuerpo: dict) -> None:
             fecha = str(cuerpo.get("fecha") or date.today().isoformat())
@@ -354,6 +466,8 @@ def crear_manejador(caja: Caja, cierres: Cierres):
             self._responder(201, cierres.cerrar(vista_previa, efectivo_contado, yape_app, nota))
 
         def do_PATCH(self):
+            if self.path.startswith("/gastos-fijos/"):
+                return self._editar_gasto_fijo()
             id_movimiento = self._id_de_ruta()
             original = caja.buscar(id_movimiento) if id_movimiento is not None else None
             if original is None:
@@ -375,6 +489,8 @@ def crear_manejador(caja: Caja, cierres: Cierres):
                 return self._responder(400, {"error": str(e)})
             if cierres.esta_cerrado(datos["fecha"]):  # no se puede mover un movimiento a un día cerrado
                 return self._dia_cerrado(datos["fecha"])
+            if "gasto_fijo" in original:  # sigue contando como el pago de ese gasto fijo
+                datos["gasto_fijo"] = original["gasto_fijo"]
             self._responder(200, caja.actualizar(id_movimiento, datos))
 
         def do_DELETE(self):
@@ -382,6 +498,11 @@ def crear_manejador(caja: Caja, cierres: Cierres):
             if fecha_cierre is not None:
                 if not cierres.reabrir(fecha_cierre):
                     return self._responder(404, {"error": f"El día {fecha_cierre} no está cerrado"})
+                return self._responder(204)
+            if self.path.startswith("/gastos-fijos/"):
+                id_gasto = self._id_de_ruta("gastos-fijos")
+                if id_gasto is None or not gastos_fijos.eliminar(id_gasto):
+                    return self._responder(404, {"error": "Gasto fijo no encontrado"})
                 return self._responder(204)
             id_movimiento = self._id_de_ruta()
             movimiento = caja.buscar(id_movimiento) if id_movimiento is not None else None
@@ -399,7 +520,7 @@ def crear_manejador(caja: Caja, cierres: Cierres):
 
 
 def main() -> None:
-    manejador = crear_manejador(Caja(ARCHIVO_DATOS), Cierres(ARCHIVO_CIERRES))
+    manejador = crear_manejador(Caja(ARCHIVO_DATOS), Cierres(ARCHIVO_CIERRES), GastosFijos(ARCHIVO_GASTOS_FIJOS))
     servidor = ThreadingHTTPServer(("127.0.0.1", PUERTO), manejador)
     puerto = servidor.server_address[1]  # el real, por si PUERTO era 0
     print(f"Caja del consultorio escuchando en http://127.0.0.1:{puerto}  (Ctrl+C para detener)", flush=True)

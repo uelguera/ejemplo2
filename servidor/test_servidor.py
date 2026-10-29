@@ -10,7 +10,7 @@ from datetime import date, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from servidor import Caja, Cierres, crear_manejador
+from servidor import Caja, Cierres, GastosFijos, crear_manejador
 
 
 class ServidorDePrueba(unittest.TestCase):
@@ -20,7 +20,8 @@ class ServidorDePrueba(unittest.TestCase):
         self.carpeta = tempfile.TemporaryDirectory()
         caja = Caja(Path(self.carpeta.name) / "movimientos.json")
         cierres = Cierres(Path(self.carpeta.name) / "cierres.json")
-        self.servidor = ThreadingHTTPServer(("127.0.0.1", 0), crear_manejador(caja, cierres))
+        gastos_fijos = GastosFijos(Path(self.carpeta.name) / "gastos_fijos.json")
+        self.servidor = ThreadingHTTPServer(("127.0.0.1", 0), crear_manejador(caja, cierres, gastos_fijos))
         self.base = f"http://127.0.0.1:{self.servidor.server_address[1]}"
         threading.Thread(target=self.servidor.serve_forever, daemon=True).start()
 
@@ -309,6 +310,131 @@ class PruebasCierre(ServidorDePrueba):
         self.pedir("DELETE", "/cierres/2026-10-05")
         self.assertEqual(self.pedir("PATCH", "/movimientos/1", {"monto": 10})[0], 200)
         self.assertEqual(self.pedir("DELETE", "/movimientos/1")[0], 204)
+
+
+class PruebasGastosFijos(ServidorDePrueba):
+    def crear_fijo(self, **cambios):
+        plantilla = {"nombre": "Alquiler", "categoria": "alquiler", "monto": 1200, "medio": "efectivo", "dia": 5, **cambios}
+        return self.pedir("POST", "/gastos-fijos", plantilla)
+
+    def pagar(self, id_gasto=1, **cuerpo):
+        return self.pedir("POST", f"/gastos-fijos/{id_gasto}/pagar", {"fecha": "2026-10-03", **cuerpo})
+
+    def test_crear_y_ver_pendiente(self):
+        estado, plantilla = self.crear_fijo(nombre="  Alquiler  ", monto="1200.00", dia="5")
+        self.assertEqual(estado, 201)
+        self.assertEqual(plantilla, {"id": 1, "nombre": "Alquiler", "categoria": "alquiler",
+                                     "monto": 1200.0, "medio": "efectivo", "dia": 5})
+        self.assertEqual(self.pedir("GET", "/gastos-fijos?mes=2026-10")[1],
+                         [{**plantilla, "pagado": False, "movimiento": None}])
+        self.assertEqual(self.pedir("GET", "/gastos-fijos?mes=todos")[1], [plantilla])
+
+    def test_sin_dia_y_orden_por_vencimiento(self):
+        self.crear_fijo(nombre="Internet", categoria="servicios", monto=90, dia=None)
+        self.crear_fijo(nombre="Luz", categoria="servicios", monto=80, dia=20)
+        self.crear_fijo(nombre="Alquiler", dia=5)
+        nombres = [g["nombre"] for g in self.pedir("GET", "/gastos-fijos?mes=2026-10")[1]]
+        self.assertEqual(nombres, ["Alquiler", "Luz", "Internet"])  # sin día de vencimiento, al final
+
+    def test_datos_invalidos_fallan(self):
+        invalidos = [
+            {"nombre": "  "},
+            {"categoria": "consulta"},  # es categoría de ingreso
+            {"monto": 0},
+            {"monto": "mil"},
+            {"medio": "tarjeta"},
+            {"dia": 0},
+            {"dia": 32},
+            {"dia": 5.5},
+            {"dia": True},
+        ]
+        for cambios in invalidos:
+            with self.subTest(cambios):
+                estado, cuerpo = self.crear_fijo(**cambios)
+                self.assertEqual(estado, 400)
+                self.assertIn("error", cuerpo)
+        self.assertEqual(self.pedir("GET", "/gastos-fijos?mes=todos")[1], [])
+
+    def test_pagar_registra_el_gasto(self):
+        self.crear_fijo()
+        estado, movimiento = self.pagar()
+        self.assertEqual(estado, 201)
+        self.assertEqual(movimiento, {"id": 1, "tipo": "gasto", "monto": 1200.0, "fecha": "2026-10-03",
+                                      "categoria": "alquiler", "medio": "efectivo", "descripcion": "Alquiler",
+                                      "gasto_fijo": 1})
+        estado_mes = self.pedir("GET", "/gastos-fijos?mes=2026-10")[1][0]
+        self.assertEqual((estado_mes["pagado"], estado_mes["movimiento"]),
+                         (True, {"id": 1, "fecha": "2026-10-03", "medio": "efectivo"}))
+        self.assertEqual(self.pedir("GET", "/resumen?mes=2026-10")[1]["gastos"], 1200.0)
+        self.assertFalse(self.pedir("GET", "/gastos-fijos?mes=2026-11")[1][0]["pagado"])  # cada mes por separado
+
+    def test_pagar_con_otro_medio_y_sin_fecha(self):
+        self.crear_fijo()
+        estado, movimiento = self.pedir("POST", "/gastos-fijos/1/pagar", {"medio": "yape"})
+        self.assertEqual(estado, 201)
+        self.assertEqual((movimiento["medio"], movimiento["fecha"]), ("yape", date.today().isoformat()))
+
+    def test_pagar_dos_veces_en_el_mismo_mes_da_409(self):
+        self.crear_fijo()
+        self.pagar()
+        estado, cuerpo = self.pagar(fecha="2026-10-28")
+        self.assertEqual(estado, 409)
+        self.assertEqual(cuerpo["error"], "Alquiler ya está pagado en 2026-10")
+        self.assertEqual(self.pagar(fecha="2026-11-03")[0], 201)  # el mes siguiente sí
+
+    def test_pagar_en_dia_cerrado_da_409(self):
+        self.crear_fijo()
+        self.pedir("POST", "/cierres", {"fecha": "2026-10-03", "efectivo_contado": 0, "yape_app": 0})
+        estado, cuerpo = self.pagar()
+        self.assertEqual(estado, 409)
+        self.assertIn("está cerrado", cuerpo["error"])
+
+    def test_pagar_con_datos_invalidos_o_inexistente(self):
+        self.crear_fijo()
+        self.assertEqual(self.pagar(fecha="2026-02-30")[0], 400)
+        self.assertEqual(self.pagar(medio="tarjeta")[0], 400)
+        self.assertEqual(self.pagar(id_gasto=99)[0], 404)
+        self.assertEqual(self.pedir("POST", "/gastos-fijos/1/cobrar", {})[0], 404)
+
+    def test_eliminar_el_pago_lo_deja_pendiente(self):
+        self.crear_fijo()
+        self.pagar()
+        self.pedir("DELETE", "/movimientos/1")
+        self.assertFalse(self.pedir("GET", "/gastos-fijos?mes=2026-10")[1][0]["pagado"])
+
+    def test_editar_el_pago_conserva_el_vinculo(self):
+        self.crear_fijo()
+        self.pagar()
+        estado, movimiento = self.pedir("PATCH", "/movimientos/1", {"medio": "yape", "fecha": "2026-10-04"})
+        self.assertEqual(estado, 200)
+        self.assertEqual(movimiento["gasto_fijo"], 1)
+        self.assertTrue(self.pedir("GET", "/gastos-fijos?mes=2026-10")[1][0]["pagado"])
+        self.assertEqual(self.pedir("PATCH", "/movimientos/1", {"gasto_fijo": 2})[0], 400)  # no se puede cambiar
+
+    def test_movimiento_normal_no_cuenta_como_pago(self):
+        self.crear_fijo()
+        self.registrar(tipo="gasto", categoria="alquiler", monto=1200, medio="efectivo", descripcion="Alquiler")
+        self.assertFalse(self.pedir("GET", "/gastos-fijos?mes=2026-10")[1][0]["pagado"])
+
+    def test_editar_plantilla_no_cambia_lo_pagado(self):
+        self.crear_fijo()
+        self.pagar()
+        estado, plantilla = self.pedir("PATCH", "/gastos-fijos/1", {"monto": 1300, "dia": ""})
+        self.assertEqual(estado, 200)
+        self.assertEqual((plantilla["monto"], plantilla["dia"], plantilla["nombre"]), (1300.0, None, "Alquiler"))
+        self.assertEqual(self.pedir("GET", "/movimientos?mes=2026-10")[1][0]["monto"], 1200.0)
+        for cambios in ({"monto": -1}, {"precio": 1}, {}):
+            with self.subTest(cambios):
+                self.assertEqual(self.pedir("PATCH", "/gastos-fijos/1", cambios)[0], 400)
+        self.assertEqual(self.pedir("PATCH", "/gastos-fijos/99", {"monto": 1})[0], 404)
+
+    def test_eliminar_plantilla_conserva_los_pagos(self):
+        self.crear_fijo()
+        self.pagar()
+        self.assertEqual(self.pedir("DELETE", "/gastos-fijos/1"), (204, None))
+        self.assertEqual(self.pedir("GET", "/gastos-fijos?mes=2026-10")[1], [])
+        self.assertEqual(len(self.pedir("GET", "/movimientos?mes=2026-10")[1]), 1)
+        self.assertEqual(self.pedir("DELETE", "/gastos-fijos/1")[0], 404)
 
 
 if __name__ == "__main__":

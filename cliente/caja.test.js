@@ -1,10 +1,28 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  describirDiferencia, formatearCierre, formatearLineaCierre, formatearMovimiento, formatearResumen,
-  formatearSoles, leerCambios, mesActual, sacarFecha,
+  describirDiferencia, formatearCierre, formatearGastoFijo, formatearGastosFijosDelMes, formatearLineaCierre,
+  formatearMovimiento, formatearResumen, formatearSoles, leerCambios, mesActual, sacarOpcion,
 } from "./caja.js";
 import { nombreRespaldo } from "./api.js";
+
+test("un gasto fijo muestra su estado solo si viene el estado del mes", () => {
+  const alquiler = { id: 1, nombre: "Alquiler", categoria: "alquiler", monto: 1200, medio: "efectivo", dia: 5 };
+  assert.equal(formatearGastoFijo(alquiler), "1. Alquiler  S/ 1,200.00  alquiler · efectivo · vence el 5");
+  assert.equal(formatearGastoFijo({ ...alquiler, dia: null, pagado: false, movimiento: null }),
+    "1. Alquiler  S/ 1,200.00  alquiler · efectivo  → pendiente");
+  assert.equal(formatearGastoFijo({ ...alquiler, pagado: true, movimiento: { id: 7, fecha: "2026-10-03", medio: "yape" } }),
+    "1. Alquiler  S/ 1,200.00  alquiler · efectivo · vence el 5  → pagado el 2026-10-03");
+});
+
+test("lo que falta pagar se suma sin errores de redondeo", () => {
+  const gasto = (id, monto, pagado) => ({
+    id, nombre: `G${id}`, categoria: "otro", monto, medio: "yape", dia: null, pagado,
+    movimiento: pagado ? { id: 9, fecha: "2026-10-01", medio: "yape" } : null,
+  });
+  const lineas = formatearGastosFijosDelMes([gasto(1, 0.1, false), gasto(2, 0.2, false), gasto(3, 5, true)], "2026-10").split("\n");
+  assert.equal(lineas.at(-1), "Por pagar en 2026-10: S/ 0.30 (2 de 3)");
+});
 
 test("la diferencia del efectivo se describe como faltante o sobrante", () => {
   assert.equal(describirDiferencia(0), "cuadra");
@@ -32,12 +50,14 @@ test("un cierre guardado sin nota no muestra la línea de nota", () => {
   assert.equal(formatearLineaCierre(cierre), "2026-10-05  efectivo: cuadra · yape: cuadra");
 });
 
-test("--fecha se saca de los argumentos y el resto queda como nota", () => {
-  const args = ["Di", "--fecha", "2026-10-05", "mal"];
-  assert.equal(sacarFecha(args), "2026-10-05");
+test("las opciones se sacan de los argumentos y el resto queda como nota", () => {
+  const args = ["Di", "--fecha", "2026-10-05", "mal", "--medio", "yape"];
+  assert.equal(sacarOpcion(args, "--fecha"), "2026-10-05");
+  assert.equal(sacarOpcion(args, "--medio"), "yape");
   assert.deepEqual(args, ["Di", "mal"]);
-  assert.equal(sacarFecha(["sin", "fecha"]), undefined);
-  assert.throws(() => sacarFecha(["--fecha"]), /Falta la fecha/);
+  assert.equal(sacarOpcion(["sin", "fecha"], "--fecha"), undefined);
+  assert.throws(() => sacarOpcion(["--fecha"], "--fecha"), /Falta el valor después de --fecha \(AAAA-MM-DD\)/);
+  assert.throws(() => sacarOpcion(["--dia"], "--dia"), /\(un número del 1 al 31\)/);
 });
 
 test("los cambios se leen como campo=valor; el valor puede tener espacios y signos =", () => {
